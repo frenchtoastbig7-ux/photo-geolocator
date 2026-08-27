@@ -223,3 +223,51 @@ ARCHITECTURE_COUNTRIES: dict[str, list[str]] = {
 # latitude, and combined with a known month imply a hemisphere.
 NORTHERN_WINTER_MONTHS = {11, 12, 1, 2, 3}
 SOUTHERN_WINTER_MONTHS = {5, 6, 7, 8, 9}
+
+
+# ---------------------------------------------------------------------------
+# UIC rolling-stock numbers. Every vehicle on the European network carries a
+# 12-digit number in which digits 3-4 are the keeper country -- so a legible
+# train flank is a hard country identifier, not an inference. Standard rail
+# OSINT tradecraft, and unambiguous where a shop name or a road sign is not.
+#
+# Example: "93 87 0029..." -> 93 = electric traction unit, 87 = France (SNCF).
+# ---------------------------------------------------------------------------
+UIC_COUNTRY: dict[str, str] = {
+    "10": "FI", "20": "RU", "21": "BY", "22": "UA", "23": "MD", "24": "LT",
+    "25": "LV", "26": "EE", "27": "KZ", "28": "GE", "29": "UZ", "30": "KP",
+    "31": "MN", "32": "VN", "33": "CN", "40": "CU", "41": "AL", "42": "JP",
+    "44": "BA", "49": "BA", "50": "BA", "51": "PL", "52": "BG", "53": "RO",
+    "54": "CZ", "55": "HU", "56": "SK", "57": "AZ", "58": "AM", "59": "KG",
+    "60": "IE", "61": "KR", "62": "ME", "63": "MK", "65": "MK", "66": "TJ",
+    "67": "TM", "68": "AF", "70": "GB", "71": "ES", "72": "RS", "73": "GR",
+    "74": "SE", "75": "TR", "76": "NO", "78": "HR", "79": "SI", "80": "DE",
+    "81": "AT", "82": "LU", "83": "IT", "84": "NL", "85": "CH", "86": "DK",
+    "87": "FR", "88": "BE", "90": "EG", "91": "TN", "92": "DZ", "93": "MA",
+    "94": "PT", "95": "IL", "96": "IR", "97": "SY", "98": "LB", "99": "IQ",
+}
+
+# Leading two digits of a UIC number that indicate a self-propelled traction
+# unit or coach rather than a freight wagon. Present only to sanity-check
+# that a run of digits really is a vehicle number.
+UIC_TYPE_PREFIXES: frozenset[str] = frozenset(
+    # Traction units (locomotives, multiple units) are 90-99; hauled coaches
+    # occupy 50-79. Freight wagons use 00-49 and 80-89, which are excluded:
+    # they overlap too readily with prices and phone numbers for a partial,
+    # unchecked number to be trusted.
+    [str(n) for n in range(90, 100)] + [str(n) for n in range(50, 80)]
+)
+
+# Aircraft registration prefixes visible on tails and fuselages.
+AIRCRAFT_PREFIX_COUNTRY: dict[str, str] = {
+    "G-": "GB", "F-": "FR", "D-": "DE", "I-": "IT", "EC-": "ES", "PH-": "NL",
+    "OO-": "BE", "LX-": "LU", "OE-": "AT", "HB-": "CH", "SE-": "SE",
+    "LN-": "NO", "OY-": "DK", "OH-": "FI", "TF-": "IS", "EI-": "IE",
+    "SP-": "PL", "OK-": "CZ", "OM-": "SK", "HA-": "HU", "YR-": "RO",
+    "LZ-": "BG", "SX-": "GR", "TC-": "TR", "9A-": "HR", "S5-": "SI",
+    "YU-": "RS", "Z3-": "MK", "CS-": "PT", "N": "US", "C-": "CA",
+    "VH-": "AU", "ZK-": "NZ", "JA": "JP", "B-": "CN", "HL": "KR",
+    "VT-": "IN", "PP-": "BR", "PR-": "BR", "LV-": "AR", "CC-": "CL",
+    "ZS-": "ZA", "A6-": "AE", "A7-": "QA", "9V-": "SG", "9M-": "MY",
+    "HS-": "TH", "PK-": "ID", "RP-": "PH", "4X-": "IL", "SU-": "EG",
+}

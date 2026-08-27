@@ -17,9 +17,12 @@ from collections import Counter
 from pathlib import Path
 
 from ..data.reference import (
+    AIRCRAFT_PREFIX_COUNTRY,
     CCTLD_COUNTRY,
     PHONE_PREFIX_COUNTRY,
     SCRIPT_COUNTRIES,
+    UIC_COUNTRY,
+    UIC_TYPE_PREFIXES,
 )
 from ..models import Confidence, ConstraintKind, Evidence, GeoConstraint
 
@@ -37,6 +40,14 @@ _SCRIPT_PREFIXES = (
 )
 
 TLD_RE = re.compile(r"\b[\w-]{2,}(\.[a-z]{2,6})+\b", re.IGNORECASE)
+# UIC vehicle numbers: 12 digits, conventionally written "93 87 0029 001-2".
+# Grab any run of digits with optional separators; validation happens in
+# `parse_uic`, which is where the real work is.
+# Deliberately excludes \n: `\s` glued a neighbouring block's stray digit
+# onto the number ("4\n93 87 0029...") and pushed it past the length check,
+# so the number was found and then silently discarded.
+UIC_RE = re.compile(r"\b\d[\d .·-]{6,20}\d\b")
+AIRCRAFT_RE = re.compile(r"\b([A-Z]{1,2}\d?-[A-Z]{3,5}|N\d{1,5}[A-Z]{0,2})\b")
 PHONE_RE = re.compile(r"(?:\+|00)\s?(\d{1,4})[\s\-.\d()]{5,}")
 # Vehicle registration patterns that are distinctive enough to be worth flagging
 PLATE_HINTS = {
@@ -44,6 +55,45 @@ PLATE_HINTS = {
     "UK current format": re.compile(r"\b[A-Z]{2}\d{2}\s?[A-Z]{3}\b"),
     "US-style plate": re.compile(r"\b[A-Z0-9]{5,7}\b"),
 }
+
+
+def uic_check_digit(first_eleven: str) -> int:
+    """UIC/Luhn self-check digit for the first 11 digits of a vehicle number.
+
+    Digits are weighted 2,1,2,1... from the left; each product is reduced by
+    summing its own digits; the check digit is what brings the total up to a
+    multiple of ten.
+    """
+    total = 0
+    for i, ch in enumerate(first_eleven):
+        product = int(ch) * (2 if i % 2 == 0 else 1)
+        total += product // 10 + product % 10
+    return (10 - total % 10) % 10
+
+
+def parse_uic(raw: str) -> str | None:
+    """Country for a UIC vehicle number, or None if it is not one.
+
+    Validation matters more than detection here: an unchecked run of digits
+    would inject a HIGH-confidence country constraint from a price tag or a
+    phone number. A full 12-digit number is accepted only when its check
+    digit verifies. A partial number -- the usual case, since OCR rarely
+    recovers a whole train flank -- is accepted only if the country code is
+    real and the leading pair is a plausible vehicle type.
+    """
+    digits = re.sub(r"\D", "", raw)
+    if not 8 <= len(digits) <= 12:
+        return None
+
+    country = UIC_COUNTRY.get(digits[2:4])
+    if not country:
+        return None
+
+    if len(digits) == 12:
+        return country if uic_check_digit(digits[:11]) == int(digits[11]) else None
+
+    # Without the check digit, insist the type code is a real vehicle class.
+    return country if digits[:2] in UIC_TYPE_PREFIXES else None
 
 
 def classify_scripts(text: str) -> Counter:
@@ -391,6 +441,64 @@ def analyze(path: Path) -> list[Evidence]:
                 kind=ConstraintKind.COUNTRIES,
                 country_scores=dict.fromkeys(ccs, 1.0),
                 floor=0.05, confidence=Confidence.HIGH, note="phone country code",
+            )],
+        ))
+
+    # ---- rolling-stock numbers ------------------------------------------
+    uic_hits: dict[str, str] = {}
+    # Scanned per OCR block: a vehicle number is a single painted string, and
+    # concatenating blocks invents digit runs that never appeared on anything.
+    for block in strong:
+        for m in UIC_RE.finditer(str(block.get("text", ""))):
+            parsed = parse_uic(m.group(0))
+            if parsed:
+                uic_hits[m.group(0).strip()] = parsed
+    if uic_hits:
+        ccs = sorted(set(uic_hits.values()))
+        out.append(Evidence(
+            id="ocr.uic", analyzer="text",
+            title=f"Rail vehicle number -> {', '.join(ccs)}",
+            detail="Found: " + "; ".join(f"{n} -> {c}" for n, c in uic_hits.items())
+                   + ". Digits 3-4 of a UIC number are the keeper country, so "
+                     "this is a registration fact rather than an inference. "
+                     "Note it identifies where the vehicle is registered, not "
+                     "necessarily where the photo was taken -- international "
+                     "services run foreign stock.",
+            confidence=Confidence.HIGH, tags=["text", "rail", "vehicle"],
+            raw={"numbers": uic_hits},
+            constraints=[GeoConstraint(
+                kind=ConstraintKind.COUNTRIES,
+                country_scores=dict.fromkeys(ccs, 1.0),
+                floor=0.08, confidence=Confidence.HIGH,
+                note="UIC rolling-stock country code",
+            )],
+        ))
+
+    # ---- aircraft registrations ------------------------------------------
+    air_hits: dict[str, str] = {}
+    for m in AIRCRAFT_RE.finditer(full_text.upper()):
+        reg = m.group(0)
+        for prefix, iso2 in sorted(AIRCRAFT_PREFIX_COUNTRY.items(),
+                                   key=lambda kv: -len(kv[0])):
+            if reg.startswith(prefix):
+                air_hits[reg] = iso2
+                break
+    if air_hits:
+        ccs = sorted(set(air_hits.values()))
+        out.append(Evidence(
+            id="ocr.aircraft", analyzer="text",
+            title=f"Aircraft registration -> {', '.join(ccs)}",
+            detail="Found: " + "; ".join(f"{n} -> {c}" for n, c in air_hits.items())
+                   + ". Registration prefixes are allocated by ICAO, so the "
+                     "country of registry is certain -- though an aircraft "
+                     "may of course be photographed anywhere.",
+            confidence=Confidence.MEDIUM, tags=["text", "aviation", "vehicle"],
+            raw={"registrations": air_hits},
+            constraints=[GeoConstraint(
+                kind=ConstraintKind.COUNTRIES,
+                country_scores=dict.fromkeys(ccs, 1.0),
+                floor=0.25, confidence=Confidence.LOW,
+                note="aircraft country of registry",
             )],
         ))
 

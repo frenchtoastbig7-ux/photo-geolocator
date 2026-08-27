@@ -19,8 +19,27 @@ from ..config import SETTINGS
 from ..models import Confidence, ConstraintKind, Evidence, GeoConstraint
 from . import overpass
 
+
 # Words that appear on buildings everywhere and geocode to arbitrary places.
 # Querying "LIBRARY" returns a library; it just will not be the right one.
+def _facility_keywords() -> set[str]:
+    """Every word that names a *kind* of place.
+
+    Such a word is by construction useless for geocoding -- it identifies a
+    category, not a location -- so the two lists must never diverge. They did:
+    "platform" was a facility keyword but not a generic token, so "PLATFORM 4"
+    was geocoded, matched a business in Australia, and dragged an entire case
+    from France to Victoria.
+    """
+    from .facility import FACILITIES
+
+    words: set[str] = set()
+    for fac in FACILITIES:
+        for kw in fac.keywords:
+            words.update(w for w in kw.split() if len(w) > 1)
+    return words
+
+
 GENERIC_TOKENS = {
     "library", "business", "school", "college", "university", "hospital",
     "entrance", "exit", "reception", "parking", "car", "park", "toilets",
@@ -29,7 +48,8 @@ GENERIC_TOKENS = {
     "centre", "center", "office", "building", "level", "floor", "street",
     "road", "avenue", "stop", "bus", "train", "danger", "warning", "private",
     "no", "yes", "in", "out", "up", "down", "left", "right", "the", "and",
-}
+    "platform", "concourse", "terminal", "gate", "arrivals", "departures",
+} | _facility_keywords()
 
 MIN_CHARS = 5
 MAX_QUERIES = 4

@@ -869,3 +869,75 @@ def test_solar_solver_recovers_time_of_day_from_a_shadow():
     assert abs((instant - truth).total_seconds()) <= 600, instant
     assert err < 1.0
     assert elevation > 0
+
+
+# ---------------------------------------------------------------------------
+# Vehicle registration identifiers
+# ---------------------------------------------------------------------------
+
+def test_uic_checksum_rejects_lookalikes():
+    """A run of digits must not become a HIGH-confidence country claim.
+
+    UIC numbers carry a Luhn check digit; without verifying it, a phone
+    number or a price would inject a country constraint stronger than
+    anything the scene model produces.
+    """
+    from geoloc.analyzers.text_ocr import parse_uic, uic_check_digit
+
+    valid = "93870029001" + str(uic_check_digit("93870029001"))
+    assert parse_uic(valid) == "FR"
+    assert parse_uic("93 87 0029") == "FR"          # partial, valid type+country
+
+    assert parse_uic("93 87 0029 001-2") is None    # wrong check digit
+    assert parse_uic("+33 1 45 67 89 01") is None   # French phone number
+    assert parse_uic("19.99 EUR 2024 0012") is None
+    assert parse_uic("12 34 5678 9012") is None     # country code 34 unassigned
+
+
+def test_uic_is_not_assembled_across_ocr_blocks():
+    """Vehicle numbers are single painted strings.
+
+    Regression: the pattern allowed \\s, so a neighbouring block's stray digit
+    was glued on ("4\\n93 87 0029 001-9"), pushing the run past the length
+    check and silently discarding a valid number.
+    """
+    from geoloc.analyzers.text_ocr import UIC_RE
+
+    joined = "PLATFORM 4\n93 87 0029 001-9"
+    for m in UIC_RE.finditer(joined):
+        assert "\n" not in m.group(0), f"matched across a line break: {m.group(0)!r}"
+
+
+def test_aircraft_registration_prefixes():
+    from geoloc.analyzers.text_ocr import AIRCRAFT_RE
+    from geoloc.data.reference import AIRCRAFT_PREFIX_COUNTRY
+
+    for reg, iso2 in (("F-GKXA", "FR"), ("G-EUPT", "GB"), ("D-AIMA", "DE")):
+        assert AIRCRAFT_RE.search(reg), reg
+        prefix = next(p for p in sorted(AIRCRAFT_PREFIX_COUNTRY, key=len,
+                                        reverse=True) if reg.startswith(p))
+        assert AIRCRAFT_PREFIX_COUNTRY[prefix] == iso2
+
+
+def test_facility_keywords_are_never_geocoded():
+    """The generic list and the facility list must not drift apart.
+
+    Regression: "platform" was a facility keyword but not a generic token, so
+    "PLATFORM 4" was geocoded, matched a business in Australia, and moved an
+    entire French case to Victoria.
+    """
+    from geoloc.geo.facility import FACILITIES
+    from geoloc.geo.textgeo import GENERIC_TOKENS, _informative
+
+    for fac in FACILITIES:
+        for kw in fac.keywords:
+            for word in kw.split():
+                if len(word) > 1:
+                    assert word in GENERIC_TOKENS, (
+                        f"facility keyword {word!r} is missing from the "
+                        "generic-token list and could be geocoded")
+
+    assert not _informative("PLATFORM 4")
+    assert not _informative("DEPARTURES")
+    # A genuine proper noun must still get through.
+    assert _informative("PEKARNA DUBRAVICA")
