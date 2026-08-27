@@ -257,12 +257,17 @@ def analyze_image(image_path: Path, *, analyst: AnalystInput | None = None,
     try:
         report.faces = faces.detect(image_path)
         report.analyzers_run.append("faces")
-        if report.faces.count:
+        if report.faces.count or report.faces.people_count:
+            people = max(report.faces.people_count, report.faces.count)
             report.warnings.append(
-                f"{report.faces.count} face(s) detected. This tool geolocates "
-                "scenes and performs no facial recognition. Faces are blurred "
-                "in exported imagery. Consider whether geolocating an image of "
-                "identifiable people is within the scope of your authorisation."
+                f"{people} person/people detected, {report.faces.count} with a "
+                "visible face. This tool geolocates scenes and performs no "
+                "facial recognition; detected faces are blurred in exported "
+                "imagery. Note that people photographed from behind remain "
+                "identifiable by clothing, build and companions, so the "
+                "absence of visible faces does not make the image anonymous. "
+                "Consider whether geolocating an image of identifiable people "
+                "is within the scope of your authorisation."
             )
             if SETTINGS.blur_faces_in_exports:
                 redacted = faces.write_redacted(

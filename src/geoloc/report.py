@@ -86,7 +86,9 @@ def render_report(report: CaseReport, case_dir: Path) -> str:
                      ("Coordinates", sm.get("coordinates", "")),
                      ("Countries", ", ".join(sm.get("countries") or []) or "—"),
                      ("Time of day", (sm.get("time_of_day") or {}).get("text", "—")),
-                     ("People present", f"{sm.get('people_present', 0)} face(s)")):
+                     ("People present",
+                      f"{sm.get('people_present', 0)} "
+                      f"({sm.get('faces_visible', 0)} with a visible face)")):
             a(f"<tr><th>{k}</th><td>{_esc(v)}</td></tr>")
         a("</table>")
         if sm.get("description"):

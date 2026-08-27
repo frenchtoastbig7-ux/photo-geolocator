@@ -431,8 +431,13 @@ def test_face_detection_returns_boxes_only():
     from geoloc.models import FaceFinding
 
     fields = set(FaceFinding.model_fields)
-    assert fields == {"count", "boxes", "blurred_export", "detector"}, (
+    assert fields == {"count", "boxes", "blurred_export", "detector",
+                      "people_count"}, (
         f"FaceFinding gained unexpected fields: {fields}")
+    # Every field must be geometry or a tally -- never a descriptor, embedding
+    # or attribute that could identify or characterise a person.
+    for name in ("count", "people_count"):
+        assert FaceFinding.model_fields[name].annotation is int
 
 
 # ---------------------------------------------------------------------------

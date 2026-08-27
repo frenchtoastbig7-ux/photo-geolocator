@@ -254,7 +254,7 @@ function render(data) {
         <tr><th>Coordinates</th><td><code>${esc(sm.coordinates || '—')}</code></td></tr>
         <tr><th>Countries</th><td>${esc((sm.countries || []).join(', ') || '—')}</td></tr>
         <tr><th>Time of day</th><td>${esc((sm.time_of_day || {}).text || '—')}</td></tr>
-        <tr><th>People</th><td>${sm.people_present || 0} face(s) detected</td></tr>
+        <tr><th>People</th><td>${sm.people_present || 0} present (${sm.faces_visible || 0} with a visible face)</td></tr>
       </table>
       ${sm.description ? `<p class="desc">${esc(sm.description)}</p>` : ''}
       ${(sm.provenance || []).length ? '<p class="lbl">Provenance</p><ul>' +

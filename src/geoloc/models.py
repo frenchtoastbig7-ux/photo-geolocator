@@ -129,6 +129,9 @@ class ImageFacts(BaseModel):
 
 class FaceFinding(BaseModel):
     count: int = 0
+    people_count: int = 0
+    """People detected regardless of whether a face is visible. Faces alone
+    understate the privacy consideration in crowd scenes."""
     boxes: list[tuple[int, int, int, int]] = Field(default_factory=list)
     blurred_export: str | None = None
     detector: str = ""

@@ -163,9 +163,10 @@ def next_steps(report: CaseReport) -> list[str]:
             "No capture time survived. If a shadow is visible, measure its "
             "bearing from true north and re-run with --shadow-azimuth to "
             "constrain both place and time.")
-    if report.faces.count:
+    if report.faces.count or report.faces.people_count:
+        people = max(report.faces.people_count, report.faces.count)
         steps.append(
-            f"{report.faces.count} face(s) present. Confirm your authorisation "
+            f"{people} person/people present. Confirm your authorisation "
             "covers imagery of identifiable people before circulating this "
             "case; exported imagery is redacted by default.")
     if not steps:
@@ -205,7 +206,8 @@ def build_summary(report: CaseReport, *, shadow_azimuth: float | None = None,
         "description": describe_scene(report),
         "observed_text": _observed_text(report),
         "provenance": provenance_notes(report),
-        "people_present": report.faces.count,
+        "people_present": max(report.faces.people_count, report.faces.count),
+        "faces_visible": report.faces.count,
         "next_steps": next_steps(report),
         "generated_utc": datetime.now(UTC).isoformat(timespec="seconds"),
     }

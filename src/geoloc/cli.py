@@ -106,7 +106,8 @@ def analyze(
             f"[cyan]Coordinates[/]  {sm.get('coordinates','—')}\n"
             f"[cyan]Countries[/]    {', '.join(sm.get('countries') or []) or '—'}\n"
             f"[cyan]Time of day[/]  {sm.get('time_of_day',{}).get('text','—')}\n"
-            f"[cyan]People[/]       {sm.get('people_present',0)} face(s) detected\n\n"
+            f"[cyan]People[/]       {sm.get('people_present',0)} present "
+            f"({sm.get('faces_visible',0)} with a visible face)\n\n"
             f"[cyan]Scene[/]\n{sm.get('description','—')}\n"
             + ("\n[cyan]Text observed[/]\n" + "; ".join(sm.get('observed_text') or [])
                if sm.get('observed_text') else "")

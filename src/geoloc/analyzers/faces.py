@@ -13,6 +13,7 @@ is ever computed or stored.
 """
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 import cv2
@@ -105,6 +106,36 @@ def _merge_boxes(boxes: list[tuple[int, int, int, int]], iou_thresh: float = 0.3
     return kept
 
 
+def detect_people(path: Path) -> int:
+    """Count people present, whether or not their faces are visible.
+
+    Face detection alone badly understates this. A station-platform photo
+    with fifteen people walking away from the camera reports zero faces,
+    which reads as "no privacy consideration here" when the image is in fact
+    full of identifiable people -- identifiable by clothing, build, gait and
+    companions, none of which needs a face. The warning should fire on
+    people, not on faces.
+    """
+    try:
+        import Vision
+        from Foundation import NSURL
+    except ImportError:
+        return 0
+    request_cls = getattr(Vision, "VNDetectHumanRectanglesRequest", None)
+    if request_cls is None:
+        return 0
+    try:
+        url = NSURL.fileURLWithPath_(str(path.resolve()))
+        handler = Vision.VNImageRequestHandler.alloc().initWithURL_options_(url, {})
+        request = request_cls.alloc().init()
+        with contextlib.suppress(Exception):
+            request.setUpperBodyOnly_(False)
+        ok, _err = handler.performRequests_error_([request], None)
+        return len(request.results() or []) if ok else 0
+    except Exception:
+        return 0
+
+
 def detect(path: Path) -> FaceFinding:
     """Locate faces so they can be flagged and redacted.
 
@@ -124,7 +155,9 @@ def detect(path: Path) -> FaceFinding:
     if boxes is None:
         return FaceFinding(detector="unavailable")
 
-    return FaceFinding(count=len(boxes), boxes=_merge_boxes(boxes), detector=detector)
+    merged = _merge_boxes(boxes)
+    return FaceFinding(count=len(merged), boxes=merged, detector=detector,
+                       people_count=detect_people(path))
 
 
 def write_redacted(path: Path, finding: FaceFinding, dest: Path,
