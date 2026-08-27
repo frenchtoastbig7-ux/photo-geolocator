@@ -218,9 +218,83 @@ def _facility_evidence(report: CaseReport, analyst: AnalystInput) -> list[Eviden
     return out
 
 
+def _vpr_evidence(image_path: Path, report: CaseReport,
+                  area: str | None = None) -> list[Evidence]:
+    """Match the image against harvested reference imagery.
+
+    This is the only component that can name a specific place, and it earns
+    that by retrieval against real photographs rather than by asking a model
+    to pick a label. It abstains by design: a corpus always has a nearest
+    neighbour, and returning it unconditionally is precisely how automated
+    geolocation produces confident, precise, wrong answers.
+    """
+    from .vpr import corpus as vpr_corpus
+    from .vpr import index as vpr_index
+    from .vpr import match as vpr_match
+    from .vpr import model as vpr_model
+
+    areas = [area] if area else [name for name, count in vpr_corpus.list_areas() if count]
+    if not areas:
+        return []
+    if not vpr_model.is_installed() and not SETTINGS.net_allowed(purpose="model_download"):
+        return []
+
+    try:
+        descriptor = vpr_model.embed_image(image_path)
+    except vpr_model.VPRUnavailable as exc:
+        return [Evidence(
+            id="vpr.unavailable", analyzer="vpr",
+            title="Place-recognition model not installed", detail=str(exc),
+            confidence=Confidence.LOW, tags=["tooling"])]
+
+    out: list[Evidence] = []
+    for name in areas:
+        idx = vpr_index.load(name)
+        if idx is None or not len(idx):
+            continue
+        result = vpr_match.match(idx, descriptor)
+        best = result.matches[0] if result.matches else None
+
+        if not result.accepted:
+            # Reported rather than dropped: "this place is not in the corpus"
+            # tells the analyst to widen coverage, and stops a silent
+            # near-miss being mistaken for the model having no opinion.
+            out.append(Evidence(
+                id=f"vpr.nomatch.{name}", analyzer="vpr",
+                title=f"No confident visual match in corpus '{name}'",
+                detail=result.reason + (
+                    f" Nearest was {best.site_name or best.site_id} at "
+                    f"{best.best_score:.3f}." if best else ""),
+                confidence=Confidence.LOW, tags=["vpr", "corpus"],
+                raw={"area": name, **result.as_dict()}))
+            continue
+
+        out.append(Evidence(
+            id=f"vpr.match.{name}", analyzer="vpr",
+            title=f"Visual match: {best.site_name or best.site_id}",
+            detail=(result.reason + " Matched by image retrieval against "
+                    f"harvested reference photographs in corpus '{name}', not "
+                    "by a model naming the place. Confirm against independent "
+                    "imagery before relying on it."),
+            confidence=Confidence.HIGH, tags=["vpr", "corpus"],
+            # `sites` is what candidate extraction reads to label a cell by
+            # the place found rather than by whatever settlement is nearest,
+            # so a match reports "Marseille Saint-Charles" and not "Marseille 03".
+            raw={"area": name,
+                 "sites": [{"name": best.site_name or best.site_id,
+                            "lat": best.lat, "lon": best.lon}],
+                 **result.as_dict()},
+            constraints=[GeoConstraint(
+                kind=ConstraintKind.POINT, lat=best.lat, lon=best.lon,
+                radius_km=0.4, confidence=Confidence.HIGH,
+                note=f"VPR match: {best.site_name or best.site_id}")]))
+    return out
+
+
 def analyze_image(image_path: Path, *, analyst: AnalystInput | None = None,
                   run_scene_model: bool = True, use_habitation_prior: bool = True,
                   auto_geocode: bool = True,
+                  run_vpr: bool = True, vpr_area: str | None = None,
                   case_dir: Path | None = None, n_candidates: int = 8,
                   progress=None) -> CaseReport:
     """Full analysis of a single image. Returns a saved, complete CaseReport."""
@@ -364,6 +438,24 @@ def analyze_image(image_path: Path, *, analyst: AnalystInput | None = None,
             post, grid = fusion.fuse(report.evidence, grid=grid, heatmaps=heatmaps,
                                      use_habitation_prior=use_habitation_prior)
             report.top_countries = fusion.top_countries(post, grid)
+
+    # ---- visual place recognition ---------------------------------------
+    if run_vpr:
+        tick("matching against reference imagery")
+        try:
+            vpr_ev = _vpr_evidence(image_path, report, vpr_area)
+        except Exception as exc:
+            report.analyzers_skipped["vpr"] = str(exc)
+            vpr_ev = []
+        if vpr_ev:
+            report.evidence.extend(vpr_ev)
+            report.analyzers_run.append("vpr")
+            if any(e.constraints for e in vpr_ev):
+                tick("re-fusing with the visual match")
+                post, grid = fusion.fuse(report.evidence, grid=grid,
+                                         heatmaps=heatmaps,
+                                         use_habitation_prior=use_habitation_prior)
+                report.top_countries = fusion.top_countries(post, grid)
 
     report.candidates = fusion.extract_candidates(
         post, grid, n=n_candidates, evidence=report.evidence)

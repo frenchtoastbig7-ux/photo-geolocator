@@ -175,6 +175,11 @@ def analyze(
         console.print_json(rep.model_dump_json())
 
 
+from .vpr.cli_commands import app as corpus_app  # noqa: E402
+
+app.add_typer(corpus_app, name="corpus")
+
+
 @app.command("list-facilities")
 def list_facilities():
     """Facility types accepted by `analyze --facility`."""

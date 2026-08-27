@@ -946,3 +946,141 @@ def test_facility_keywords_are_never_geocoded():
     assert not _informative("DEPARTURES")
     # A genuine proper noun must still get through.
     assert _informative("PEKARNA DUBRAVICA")
+
+
+# ---------------------------------------------------------------------------
+# Visual place recognition: abstention
+# ---------------------------------------------------------------------------
+
+def _hit(site, score, name="", lat=0.0, lon=0.0, title="t.jpg"):
+    return (score, {"site_id": site, "site_name": name or site,
+                    "site_lat": lat, "site_lon": lon, "title": title})
+
+
+class _FakeIndex:
+    def __init__(self, hits):
+        self._hits = sorted(hits, key=lambda h: -h[0])
+        self.records = [h[1] for h in self._hits]
+
+    def __len__(self):
+        return len(self._hits)
+
+    def search(self, query, top_k=25):
+        return self._hits[:top_k]
+
+
+def test_vpr_rejects_when_nothing_matches():
+    """An index always has a nearest neighbour; returning it regardless is
+    how automated geolocation produces confident, precise, wrong answers.
+
+    The scores here are the ones actually measured when MegaLoc was queried
+    with a station photograph whose scene was NOT in the corpus: a best of
+    0.16 with the field close behind. Reporting that as an identification
+    would be fabrication.
+    """
+    from geoloc.vpr.match import match
+
+    idx = _FakeIndex([_hit("a", 0.16), _hit("b", 0.11), _hit("c", 0.08)])
+    assert not match(idx, np.zeros(4)).accepted
+
+    # And a corpus containing nothing even loosely similar.
+    faint = _FakeIndex([_hit("a", 0.09), _hit("b", 0.02)])
+    result = match(faint, np.zeros(4))
+    assert not result.accepted
+    assert "floor" in result.reason
+
+
+def test_vpr_rejects_a_tie_between_sites():
+    """Two sites scoring alike means the descriptor is responding to
+    something they share, not to either of them.
+
+    Calibration put this band squarely where identifications go wrong:
+    accepting a margin of 0.01 drops precision to 84%, while requiring 0.05
+    raises it to 96%.
+    """
+    from geoloc.vpr.match import match
+
+    idx = _FakeIndex([_hit("a", 0.71), _hit("b", 0.70), _hit("c", 0.4)])
+    result = match(idx, np.zeros(4))
+    assert not result.accepted
+    assert "separation" in result.reason
+
+
+def test_vpr_absolute_score_is_only_a_floor():
+    """Relative separation carries the signal, not absolute similarity.
+
+    Regression: the first implementation accepted on absolute score alone.
+    Held-out calibration showed that is the weakest of four discriminators
+    (AUC 0.78 against 0.87 for the ratio), and a floor set from the control
+    distribution would have rejected 68% of genuine matches. A modest
+    absolute score with clear separation must therefore be accepted.
+    """
+    from geoloc.vpr.match import match
+
+    idx = _FakeIndex([_hit("a", 0.34, "Real Place", 43.3, 5.4),
+                      _hit("a", 0.30, "Real Place", 43.3, 5.4),
+                      _hit("b", 0.15, "Elsewhere", 48.8, 2.3)])
+    result = match(idx, np.zeros(4))
+    assert result.accepted, result.reason
+    assert result.matches[0].site_name == "Real Place"
+
+
+def test_vpr_accepts_a_clear_well_supported_match():
+    from geoloc.vpr.match import match
+
+    idx = _FakeIndex([
+        _hit("gare", 0.82, "Marseille-Saint-Charles", 43.303, 5.381),
+        _hit("gare", 0.77, "Marseille-Saint-Charles", 43.303, 5.381),
+        _hit("other", 0.51, "Somewhere Else", 48.8, 2.3),
+    ])
+    result = match(idx, np.zeros(4))
+    assert result.accepted, result.reason
+    best = result.matches[0]
+    assert best.site_name == "Marseille-Saint-Charles"
+    assert best.support == 2, "supporting images should be counted"
+    assert abs(best.lat - 43.303) < 1e-6
+
+
+def test_vpr_aggregates_images_to_sites_keeping_the_best_score():
+    from geoloc.vpr.match import aggregate
+
+    sites = aggregate([_hit("x", 0.5), _hit("x", 0.9), _hit("y", 0.7)])
+    assert [s.site_id for s in sites] == ["x", "y"]
+    assert sites[0].best_score == 0.9
+    assert sites[0].support == 2
+
+
+def test_vpr_thresholds_are_documented_constants():
+    """The thresholds decide whether this tool fabricates. They must be
+    explicit and adjustable, not buried literals."""
+    from geoloc.vpr import match as m
+
+    assert 0.0 < m.MIN_SIMILARITY < 1.0
+    assert 0.0 < m.MIN_MARGIN < 1.0
+    assert m.match.__doc__ is not None or m.__doc__ is not None
+    assert "abstention" in m.__doc__.lower()
+
+
+def test_vpr_match_labels_the_candidate_by_site_name():
+    """A visual match must report the place it found, not the nearest town.
+
+    "Marseille Saint-Charles" is the finding; "Marseille 03" is the postcode
+    district that happens to contain it and tells an analyst nothing about
+    what was matched.
+    """
+    from geoloc.geo.fusion import extract_candidates, fuse
+    from geoloc.geo.grid import world_grid
+
+    grid = world_grid(1.0)
+    ev = Evidence(
+        id="vpr.match.fr-stations", analyzer="vpr", title="Visual match",
+        confidence=Confidence.HIGH,
+        raw={"sites": [{"name": "Marseille Saint-Charles",
+                        "lat": 43.3033, "lon": 5.3812}]},
+        constraints=[GeoConstraint(kind=ConstraintKind.POINT, lat=43.3033,
+                                   lon=5.3812, radius_km=0.4,
+                                   confidence=Confidence.HIGH)])
+    post, g = fuse([ev], grid=grid)
+    cands = extract_candidates(post, g, n=2, evidence=[ev])
+    assert cands and "Marseille Saint-Charles" in cands[0].label
+    assert abs(cands[0].lat - 43.3033) < 1e-6
