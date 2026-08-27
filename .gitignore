@@ -40,6 +40,15 @@ env/
 .coverage
 htmlcov/
 
+# --- Packaging build output ---
+build/
+dist/
+*.dmg
+smoke.log
+# Working directory for iconutil; the .icns and preview PNG are committed so
+# the icon is reviewable, and build_app.sh regenerates both from make_icon.py.
+packaging/geoloc.iconset/
+
 # --- Editors / OS ---
 .DS_Store
 .idea/

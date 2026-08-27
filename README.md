@@ -57,6 +57,38 @@ and nothing here substitutes for corroboration.
 
 ## Install
 
+### macOS app (recommended)
+
+Download `GeolocationWorkbench.dmg` from
+[Releases](https://github.com/frenchtoastbig7-ux/photo-geolocator/releases),
+drag the app to Applications, and open it. It carries its own Python and
+PyTorch — nothing else to install.
+
+**First launch:** the app is not notarised, so macOS will refuse a plain
+double-click. Right-click it in Applications, choose **Open**, then confirm.
+Only needed once.
+
+The window is the workbench itself, not a browser tab. Analyses run in-process
+on a random loopback port; nothing listens on a predictable port and nothing
+is reachable from outside the machine.
+
+Cases, logs and any downloaded model live in
+`~/Library/Application Support/Geolocation Workbench`. Deleting that folder
+removes everything the app has stored.
+
+#### The optional scene model
+
+The app ships without StreetCLIP's 1.7 GB weights, because bundling them
+would triple the download. Everything else — metadata forensics, OCR, solar
+geometry, fusion, mapping, reports, OSM refinement — works the moment you
+install it.
+
+To add the scene model, open **Analysis options → Install scene model**. It
+downloads once, in-app, with a progress bar, and thereafter runs entirely
+offline. You can remove it again from the same panel to reclaim the space.
+
+### From source
+
 Requires Python 3.11+. On Apple Silicon the scene model runs on the GPU via
 Metal automatically.
 
@@ -202,6 +234,27 @@ Labels within ~50 km of a land border are unreliable. This affects the
 human-readable label only, not the posterior.
 
 ---
+
+## Building the app
+
+```bash
+bash packaging/build_app.sh          # -> dist/Geolocation Workbench.app
+bash packaging/make_dmg.sh           # -> dist/GeolocationWorkbench.dmg
+```
+
+`build_app.sh` regenerates the icon, runs PyInstaller against
+`packaging/geoloc-mac.spec`, ad-hoc signs the bundle and clears the
+quarantine flag. Ad-hoc signing is not notarisation — recipients still get
+the unidentified-developer prompt on first open.
+
+Two size decisions are encoded in the spec and are easy to undo if you
+disagree with them:
+
+- **StreetCLIP weights are excluded** and fetched on demand.
+- **Three of geonamescache's four city datasets are excluded.** `grid.py`
+  pins `min_city_population=15000`, so only `cities15000.json` is ever read;
+  carrying the others would add ~170 MB for nothing. Changing that threshold
+  means changing the spec too.
 
 ## Tests
 

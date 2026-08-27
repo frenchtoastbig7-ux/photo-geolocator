@@ -1,0 +1,82 @@
+name: Build macOS app
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-14          # Apple Silicon
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[ml,ocr,app]"
+
+      - name: Build the app bundle
+        env:
+          PYTHON: python
+        run: bash packaging/build_app.sh
+
+      # A PyInstaller bundle can build cleanly and still fail on first launch
+      # because a dynamically-imported module was never collected. Launch the
+      # frozen binary headless and require it to report a ready server.
+      - name: Smoke-test the frozen bundle
+        run: |
+          BIN="dist/Geolocation Workbench.app/Contents/MacOS/Geolocation Workbench"
+          [ -x "$BIN" ] || { echo "no executable at $BIN"; exit 1; }
+          set +e
+          GEOLOC_SMOKE_TEST=1 "$BIN" > smoke.log 2>&1
+          code=$?
+          set -e
+          echo "---- smoke output ----"; cat smoke.log
+          [ $code -eq 0 ] || { echo "frozen app exited $code"; exit 1; }
+          grep -q "ready at http://127.0.0.1" smoke.log \
+            || { echo "app did not report a ready server"; exit 1; }
+          # Capability, not just responsiveness: an over-broad exclusion in
+          # the spec can break `import torch` while the server still answers.
+          grep -q "torch=True" smoke.log \
+            || { echo "PyTorch is not importable inside the bundle"; exit 1; }
+          grep -q "SMOKE FAIL" smoke.log && { echo "smoke test reported failure"; exit 1; }
+          echo "smoke test passed"
+
+      - name: Verify the scene model was NOT bundled
+        # The weights are meant to be fetched on demand. If they ever get
+        # swept into the bundle the download balloons by 1.7 GB silently.
+        run: |
+          if find "dist/Geolocation Workbench.app" -name "pytorch_model.bin" | grep -q .; then
+            echo "StreetCLIP weights leaked into the bundle"; exit 1
+          fi
+          echo "confirmed: weights are not bundled"
+
+      - name: Build the disk image
+        run: bash packaging/make_dmg.sh
+
+      - name: Report size
+        run: |
+          du -sh "dist/Geolocation Workbench.app"
+          ls -lh dist/GeolocationWorkbench.dmg
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: GeolocationWorkbench-macos
+          path: dist/GeolocationWorkbench.dmg
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/GeolocationWorkbench.dmg

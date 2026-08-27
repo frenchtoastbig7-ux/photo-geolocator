@@ -160,10 +160,38 @@ def prefetch_models():
     if SETTINGS.offline:
         console.print("[red]Offline mode is on; cannot prefetch.[/]")
         raise typer.Exit(1)
-    console.print(f"Fetching [cyan]{SETTINGS.clip_model}[/] "
-                  f"to {SETTINGS.model_cache} ...")
-    from .analyzers.clip_scene import _load_model
-    _load_model()
+    from . import modelmgr
+
+    if modelmgr.is_installed():
+        console.print("[green]Already installed.[/] "
+                      f"Cache: {modelmgr.hf_cache_dir()}")
+        return
+
+    console.print(f"Fetching [cyan]{modelmgr.MODEL_ID}[/] "
+                  f"(~{modelmgr.APPROX_TOTAL_BYTES / 1e9:.1f} GB) "
+                  f"to {modelmgr.hf_cache_dir()} ...")
+    started = modelmgr.start_download()
+    if not started.get("ok"):
+        console.print(f"[red]{started.get('reason')}[/]")
+        raise typer.Exit(1)
+
+    import time
+
+    from rich.progress import BarColumn, DownloadColumn, Progress, TimeRemainingColumn
+    with Progress(BarColumn(), DownloadColumn(), TimeRemainingColumn(),
+                  console=console) as bar:
+        task = bar.add_task("download", total=modelmgr.APPROX_TOTAL_BYTES)
+        while True:
+            st = modelmgr.status()["progress"]
+            bar.update(task, completed=st["downloaded"], total=st["total"])
+            if st["state"] in {"done", "error"}:
+                break
+            time.sleep(0.5)
+
+    final = modelmgr.status()["progress"]
+    if final["state"] == "error":
+        console.print(f"[red]Download failed:[/] {final['error']}")
+        raise typer.Exit(1)
     console.print("[green]Done.[/] The scene model now runs offline.")
 
 

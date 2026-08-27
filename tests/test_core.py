@@ -433,3 +433,106 @@ def test_face_detection_returns_boxes_only():
     fields = set(FaceFinding.model_fields)
     assert fields == {"count", "boxes", "blurred_export", "detector"}, (
         f"FaceFinding gained unexpected fields: {fields}")
+
+
+# ---------------------------------------------------------------------------
+# Packaging: frozen-app paths and the optional scene model
+# ---------------------------------------------------------------------------
+
+def test_app_support_dir_is_outside_the_bundle():
+    """A .app is read-only, so nothing may be written next to the binary."""
+    from geoloc.config import PKG_ROOT, app_support_dir
+
+    support = app_support_dir()
+    assert not str(support).startswith(str(PKG_ROOT))
+    assert support.is_absolute()
+
+
+def test_frozen_paths_redirect_to_app_support(monkeypatch):
+    """Frozen builds must not default case output into the bundle."""
+    import geoloc.config as cfg
+
+    monkeypatch.setattr(cfg.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(cfg.sys, "_MEIPASS", "/tmp/meipass", raising=False)
+    assert cfg.is_frozen()
+    assert cfg.app_support_dir() in cfg.default_case_dir().parents
+    assert cfg.app_support_dir() in cfg.default_model_cache().parents
+
+
+def test_resolve_device_survives_a_broken_torch(monkeypatch):
+    """The device probe backs the app's readiness check.
+
+    Regression: inside the PyInstaller bundle `torch.backends` was not
+    collected, so attribute access raised AttributeError, every request to
+    /api/settings returned 500, and the app read as 'will not start'.
+    """
+    import builtins
+
+    from geoloc.config import Settings
+
+    real_import = builtins.__import__
+
+    class Stub:  # torch with no `backends` attribute, as in the bad bundle
+        pass
+
+    def fake_import(name, *args, **kwargs):
+        if name == "torch":
+            return Stub()
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    assert Settings(device="auto").resolve_device() == "cpu"
+
+
+def test_model_status_shape():
+    from geoloc import modelmgr
+
+    s = modelmgr.status()
+    for key in ("model", "revision", "installed", "torch_available",
+                "cache_dir", "approx_bytes", "progress"):
+        assert key in s, f"status() missing {key}"
+    assert isinstance(s["installed"], bool)
+    for key in ("state", "downloaded", "total", "percent"):
+        assert key in s["progress"]
+
+
+def test_model_revision_is_pinned():
+    """Letting transformers resolve the revision fetched two weight formats,
+    turning a 1.7 GB download into 3.2 GB on disk."""
+    from geoloc import modelmgr
+
+    assert len(modelmgr.MODEL_REVISION) == 40, "revision must be a full commit sha"
+    assert "pytorch_model.bin" in modelmgr.ALLOW_PATTERNS
+    # The repo also carries demo photographs that serve no runtime purpose.
+    assert not any(p.endswith((".jpg", ".jpeg", ".png"))
+                   for p in modelmgr.ALLOW_PATTERNS)
+
+
+def test_model_install_blocked_while_offline(monkeypatch):
+    from geoloc import modelmgr
+    from geoloc.config import SETTINGS
+
+    monkeypatch.setattr(SETTINGS, "offline", True)
+    monkeypatch.setattr(modelmgr, "is_installed", lambda: False)
+    result = modelmgr.start_download()
+    assert result["ok"] is False
+    assert "offline" in result["reason"].lower()
+
+
+def test_scene_analyzer_reports_missing_model_as_evidence(tmp_path, monkeypatch):
+    """A missing optional model is a finding, not a crash."""
+    from PIL import Image
+
+    from geoloc.analyzers import clip_scene
+
+    img = tmp_path / "x.png"
+    Image.new("RGB", (64, 64), (128, 128, 128)).save(img)
+
+    def boom(_path):
+        raise clip_scene.SceneModelUnavailable("The scene model is not installed.")
+
+    monkeypatch.setattr(clip_scene, "_encode_image", boom)
+    evidence = clip_scene.analyze(img)
+    assert len(evidence) == 1
+    assert evidence[0].id == "clip.unavailable"
+    assert evidence[0].constraints == [], "an absent model must not constrain location"

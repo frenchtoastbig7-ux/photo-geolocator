@@ -151,6 +151,7 @@ $('offlineToggle').addEventListener('change', async e => {
   });
   state.settings = await r.json();
   applyOffline(state.settings.offline);
+  refreshModel();
 });
 
 /* ── file input ───────────────────────────────────────────────── */
@@ -367,6 +368,91 @@ function showOsm(items, heading) {
   }));
 }
 
+/* ── optional scene model ─────────────────────────────────────── */
+const fmtGB = b => (b / 1e9).toFixed(2) + ' GB';
+let modelPoll = null;
+
+async function refreshModel() {
+  let m;
+  try { m = await (await fetch('/api/model')).json(); }
+  catch { return; }
+  state.model = m;
+  renderModelBox(m);
+
+  // Poll only while a download is actually in flight.
+  const running = m.progress && m.progress.state === 'running';
+  if (running && !modelPoll) modelPoll = setInterval(refreshModel, 1000);
+  if (!running && modelPoll) { clearInterval(modelPoll); modelPoll = null; }
+}
+
+function renderModelBox(m) {
+  const box = $('modelBox');
+  const runScene = $('runScene');
+  box.classList.remove('hidden');
+
+  if (!m.torch_available) {
+    box.className = 'modelbox warn';
+    box.innerHTML = `<div class="mb-hd"><span class="mb-dot missing"></span>
+      <span class="mb-title">Scene model unavailable</span></div>
+      <p>PyTorch is not present in this build, so StreetCLIP cannot run.
+      Every other analyzer works normally.</p>`;
+    runScene.checked = false; runScene.disabled = true;
+    return;
+  }
+
+  const p = m.progress || {};
+  if (p.state === 'running') {
+    box.className = 'modelbox';
+    box.innerHTML = `<div class="mb-hd"><span class="mb-dot"></span>
+      <span class="mb-title">Installing scene model…</span></div>
+      <div class="progress"><span class="fill" style="width:${p.percent}%"></span></div>
+      <p>${fmtGB(p.downloaded)} of ${fmtGB(p.total)} · ${p.percent}%
+      — you can run analyses meanwhile; the scene model joins in once ready.</p>`;
+    runScene.disabled = true;
+    return;
+  }
+
+  if (m.installed) {
+    box.className = 'modelbox';
+    box.innerHTML = `<div class="mb-hd"><span class="mb-dot ok"></span>
+      <span class="mb-title">Scene model installed</span></div>
+      <p>StreetCLIP ${esc(m.revision)} · runs entirely offline.</p>
+      <div class="mb-actions"><button class="linklike" id="modelRemove">Remove and free ${fmtGB(m.approx_bytes)}</button></div>`;
+    runScene.disabled = false;
+    $('modelRemove').addEventListener('click', async () => {
+      if (!confirm('Delete the downloaded scene model weights?')) return;
+      await fetch('/api/model', { method: 'DELETE' });
+      refreshModel();
+    });
+    return;
+  }
+
+  // Not installed.
+  box.className = 'modelbox warn';
+  const err = p.state === 'error'
+    ? `<p><strong>Last attempt failed:</strong> ${esc(p.error)}</p>` : '';
+  box.innerHTML = `<div class="mb-hd"><span class="mb-dot missing"></span>
+    <span class="mb-title">Scene model not installed</span></div>
+    <p>A one-time ${fmtGB(m.approx_bytes)} download. Metadata, OCR, solar
+    geometry and fusion all work without it — StreetCLIP adds a coarse
+    country estimate and scene description.</p>${err}
+    <div class="mb-actions"><button class="ghost" id="modelInstall">Install scene model</button></div>`;
+  runScene.checked = false; runScene.disabled = true;
+  $('modelInstall').addEventListener('click', async () => {
+    const btn = $('modelInstall');
+    btn.disabled = true; btn.textContent = 'Starting…';
+    try {
+      const r = await fetch('/api/model/install', { method: 'POST' });
+      if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+      refreshModel();
+    } catch (e) {
+      btn.disabled = false; btn.textContent = 'Install scene model';
+      box.insertAdjacentHTML('beforeend',
+        `<p><strong>${esc(e.message)}</strong></p>`);
+    }
+  });
+}
+
 /* ── case history ─────────────────────────────────────────────── */
 $('historyBtn').addEventListener('click', async () => {
   $('modal').classList.remove('hidden');
@@ -389,3 +475,4 @@ $('modal').addEventListener('click', e => {
 });
 
 loadSettings();
+refreshModel();

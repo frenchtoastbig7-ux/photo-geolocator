@@ -78,7 +78,11 @@ class PlaceIndex:
 def place_index() -> PlaceIndex:
     import geonamescache
 
-    gc = geonamescache.GeonamesCache()
+    # Pinned explicitly rather than left to the default. geonamescache ships
+    # four city datasets totalling ~190 MB and loads whichever matches this
+    # threshold; the packaged app excludes the other three, so changing this
+    # number would break the frozen build.
+    gc = geonamescache.GeonamesCache(min_city_population=15000)
     cities = gc.get_cities()
     lats, lons, names, countries, admin1, pops = [], [], [], [], [], []
     for c in cities.values():

@@ -18,6 +18,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import modelmgr
 from .config import SETTINGS, OfflineError
 from .geo import overpass
 from .pipeline import AnalystInput, analyze_image, load_case
@@ -90,6 +91,25 @@ async def set_settings(request: Request) -> dict[str, Any]:
     if "blur_faces" in body:
         SETTINGS.blur_faces_in_exports = bool(body["blur_faces"])
     return get_settings()
+
+
+@app.get("/api/model")
+def api_model_status() -> dict[str, Any]:
+    """Whether the optional scene model is installed, and download progress."""
+    return modelmgr.status()
+
+
+@app.post("/api/model/install")
+def api_model_install() -> dict[str, Any]:
+    result = modelmgr.start_download()
+    if not result.get("ok"):
+        raise HTTPException(409, result.get("reason", "cannot start download"))
+    return {**result, **modelmgr.status()}
+
+
+@app.delete("/api/model")
+def api_model_remove() -> dict[str, Any]:
+    return {**modelmgr.remove(), **modelmgr.status()}
 
 
 @app.get("/api/cases")

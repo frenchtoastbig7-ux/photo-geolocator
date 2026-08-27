@@ -24,6 +24,11 @@ ml = [
     "torch>=2.2",
     "torchvision>=0.17",
     "transformers>=4.40",
+    "huggingface-hub>=0.23",
+]
+app = [
+    "pywebview>=5.0; sys_platform == 'darwin'",
+    "pyinstaller>=6.10",
 ]
 ocr = [
     "pyobjc-framework-Vision>=10.1; sys_platform == 'darwin'",
@@ -36,6 +41,7 @@ dev = [
 
 [project.scripts]
 geoloc = "geoloc.cli:app"
+geoloc-desktop = "geoloc.desktop:main"
 
 [build-system]
 requires = ["hatchling"]

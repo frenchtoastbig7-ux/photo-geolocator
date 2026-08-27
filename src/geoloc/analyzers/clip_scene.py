@@ -41,25 +41,36 @@ def _country_list() -> list[tuple[str, str]]:
     )
 
 
+class SceneModelUnavailable(RuntimeError):
+    """The scene model cannot be loaded, with a reason fit to show a user."""
+
+
 @functools.lru_cache(maxsize=1)
 def _load_model():
-    if not SETTINGS.net_allowed(purpose="model_download"):
-        # Still fine if the weights are already in the local HF cache.
-        import os
-        os.environ["HF_HUB_OFFLINE"] = "1"
-        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    from .. import modelmgr
+
     try:
         import torch
         from transformers import CLIPModel, CLIPProcessor
     except ImportError as exc:
-        raise RuntimeError(
-            "PyTorch/transformers not installed. Install the ML extra: "
+        raise SceneModelUnavailable(
+            "PyTorch is not installed. Install the ML extra: "
             "uv pip install -e '.[ml]'"
         ) from exc
 
+    snapshot = modelmgr.snapshot_path()
+    if snapshot is None:
+        raise SceneModelUnavailable(
+            "The scene model is not installed. It is a one-time 1.7 GB "
+            "download; every other analyzer works without it."
+        )
+
+    # Load from the resolved local snapshot with a pinned revision, so no
+    # network call happens here even implicitly.
     device = SETTINGS.resolve_device()
-    model = CLIPModel.from_pretrained(SETTINGS.clip_model).to(device).eval()
-    processor = CLIPProcessor.from_pretrained(SETTINGS.clip_model)
+    model = CLIPModel.from_pretrained(str(snapshot), local_files_only=True)
+    model = model.to(device).eval()
+    processor = CLIPProcessor.from_pretrained(str(snapshot), local_files_only=True)
     return model, processor, device, torch
 
 
@@ -122,6 +133,12 @@ def analyze(path: Path, *, heatmaps: dict[str, np.ndarray] | None = None,
             grid=None) -> list[Evidence]:
     try:
         image_vec = _encode_image(path)
+    except SceneModelUnavailable as exc:
+        return [Evidence(
+            id="clip.unavailable", analyzer="scene",
+            title="Scene model not installed", detail=str(exc),
+            confidence=Confidence.LOW, tags=["tooling"],
+        )]
     except RuntimeError as exc:
         return [Evidence(
             id="clip.unavailable", analyzer="scene",

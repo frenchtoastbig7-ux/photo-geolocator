@@ -8,11 +8,44 @@ run, model-weight downloads. `OFFLINE` disables all of it.
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 PKG_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = PKG_ROOT.parent.parent
+
+APP_NAME = "Geolocation Workbench"
+
+
+def is_frozen() -> bool:
+    """True when running from a PyInstaller bundle (the .app)."""
+    return getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")
+
+
+def app_support_dir() -> Path:
+    """Writable per-user storage for the packaged app.
+
+    A .app bundle is read-only in every sane deployment (and is code-signed
+    against modification), so nothing may be written next to the binary.
+    """
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / APP_NAME
+    return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "geoloc"
+
+
+def default_case_dir() -> Path:
+    return app_support_dir() / "cases" if is_frozen() else PROJECT_ROOT / "cases"
+
+
+def default_model_cache() -> Path:
+    """Where the world grid and model weights live.
+
+    Frozen builds keep the 1.7 GB StreetCLIP download in Application Support
+    so it survives replacing the .app, and so a re-install does not force a
+    re-download.
+    """
+    return app_support_dir() / "models" if is_frozen() else Path.home() / ".cache" / "geoloc"
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -53,9 +86,9 @@ class Settings:
     http_timeout: float = 45.0
 
     # --- storage ---------------------------------------------------------
-    case_dir: Path = field(default_factory=lambda: _env_path("GEOLOC_CASE_DIR", PROJECT_ROOT / "cases"))
+    case_dir: Path = field(default_factory=lambda: _env_path("GEOLOC_CASE_DIR", default_case_dir()))
     model_cache: Path = field(
-        default_factory=lambda: _env_path("GEOLOC_MODEL_CACHE", Path.home() / ".cache" / "geoloc")
+        default_factory=lambda: _env_path("GEOLOC_MODEL_CACHE", default_model_cache())
     )
 
     # --- analysis knobs --------------------------------------------------
@@ -83,16 +116,24 @@ class Settings:
         self.model_cache.mkdir(parents=True, exist_ok=True)
 
     def resolve_device(self) -> str:
+        """Best available compute device, falling back to CPU.
+
+        Deliberately broad in what it catches: this is called from the
+        settings endpoint that the desktop app polls for readiness, and a
+        probe failure here would present as "the app will not start". A
+        wrong device answer is recoverable; an unstartable app is not.
+        """
         if self.device != "auto":
             return self.device
         try:
             import torch
-        except ImportError:
+
+            if torch.backends.mps.is_available():
+                return "mps"
+            if torch.cuda.is_available():
+                return "cuda"
+        except Exception:
             return "cpu"
-        if torch.backends.mps.is_available():
-            return "mps"
-        if torch.cuda.is_available():
-            return "cuda"
         return "cpu"
 
 
