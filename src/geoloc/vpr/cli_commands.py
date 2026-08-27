@@ -54,6 +54,11 @@ def build_corpus(
     per_site: int = typer.Option(60, "--per-site", help="Reference images per site."),
     site_radius_m: int = typer.Option(500, "--site-radius-m"),
     index_only: bool = typer.Option(False, "--index-only", help="Skip harvesting; re-embed what is on disk."),
+    use_categories: bool = typer.Option(False, "--categories",
+                                        help="Also harvest Commons categories. Measured "
+                                             "WORSE than the radius default (14% vs 45% "
+                                             "recall); opt in only for areas whose "
+                                             "category trees are genuinely photographic."),
 ):
     """Harvest reference imagery for an area and build its descriptor index.
 
@@ -76,6 +81,7 @@ def build_corpus(
         with console.status("[cyan]harvesting[/]") as status:
             records, stats = corpus.harvest(
                 area, sites, per_site=per_site, radius_m=site_radius_m,
+                use_categories=use_categories,
                 progress=lambda m: status.update(f"[cyan]{m}[/]"))
         console.print(f"[green]Harvest:[/] {stats.downloaded} downloaded, "
                       f"{stats.skipped} already present, {stats.failed} failed, "

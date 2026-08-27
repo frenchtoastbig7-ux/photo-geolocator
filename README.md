@@ -270,9 +270,8 @@ geoloc corpus calibrate --area fr-rail      # measure before trusting it
 geoloc corpus match photo.jpg --area fr-rail
 ```
 
-Reference imagery comes from Wikimedia Commons: the site's own category
-first (curated as images *of* the place), then a geographic radius to fill
-out coverage. Descriptors come from MegaLoc, a model trained for place
+Reference imagery comes from geotagged Wikimedia Commons files within a
+radius of each site. Descriptors come from MegaLoc, a model trained for place
 recognition rather than semantic similarity.
 
 **Calibrate every corpus before relying on it.** `corpus calibrate` is
@@ -319,6 +318,28 @@ radius, its images show a train, a vending machine, a lounge and a facade.
 Those share no geometry, so there is nothing for verification to find. It
 would become worthwhile only against corpora built from same-structure
 imagery, and the fix is better corpus construction, not a better verifier.
+
+**Harvesting from curated categories instead of a radius.** This is the
+intuitive choice and it is wrong. A radius search really does return a
+vending machine, a bin collection and a commemorative plaque, while a Commons
+category is curated as images *of* the place — so categories were made the
+primary source. Measured head-to-head on thirteen identical sites:
+
+| harvest strategy | fabrication | genuine matches found |
+|---|---|---|
+| Commons categories | 5% | 14% |
+| geographic radius | **2%** | **45%** |
+
+Three times the recall at less than half the fabrication, so the change was
+reverted and categories are now opt-in (`--categories`). The likely reason is
+viewpoint: a geotagged photograph is one somebody stood at the place and
+took, matching how a query photograph is taken, whereas a categorised one is
+often an archival image, a plan or an interior detail — tidier, and useless
+for recognising a building from the street.
+
+The first comparison of these two strategies was confounded — the corpora
+covered different stations — and appeared to show the same thing for the
+wrong reason. Comparisons here need identical site sets.
 
 **Filtering a corpus by relevance with CLIP.** Also tried, also measured:
 separation margins of ±0.1, keeping a bin collection and a commemorative

@@ -1086,25 +1086,23 @@ def test_vpr_match_labels_the_candidate_by_site_name():
     assert abs(cands[0].lat - 43.3033) < 1e-6
 
 
-def test_corpus_prefers_curated_categories_over_a_radius():
-    """Corpus quality is the accuracy bottleneck, so harvesting must lead
-    with categories.
+def test_corpus_defaults_to_radius_not_categories():
+    """Curated categories look like the better source and measurably are not.
 
-    A 400 m radius around a station returns a vending machine, a bin
-    collection and a commemorative plaque -- all genuinely nearby, none
-    useful for recognising the place. Commons categories are curated as
-    images *of* a subject, so they are queried first and the radius only
-    fills out coverage.
+    Head-to-head on thirteen identical sites: categories gave 14% recall at
+    5% fabrication, the geographic radius 45% at 2%. A geotagged photo is one
+    somebody stood at the place and took, so its viewpoints match a query
+    photograph's; a categorised photo is often an archival image, a plan or
+    an interior detail. The default must therefore be the radius, and this
+    test exists because the opposite is the intuitive choice.
     """
     import inspect
 
     from geoloc.vpr import corpus
 
-    src = inspect.getsource(corpus.harvest_site)
-    cat_at = src.index("find_category")
-    geo_at = src.index("discover_files")
-    assert cat_at < geo_at, "category lookup must precede the radius search"
-    assert hasattr(corpus, "category_files")
+    for fn in (corpus.harvest, corpus.harvest_site):
+        assert inspect.signature(fn).parameters["use_categories"].default is False, (
+            f"{fn.__name__} must default to radius harvesting")
 
 
 def test_category_traversal_descends_into_subcategories():

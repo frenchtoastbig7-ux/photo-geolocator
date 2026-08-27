@@ -136,11 +136,24 @@ def resolve_thumbs(client: httpx.Client, titles: list[str]) -> dict[str, str]:
 def find_category(client: httpx.Client, site_name: str) -> str | None:
     """Best-matching Commons category for a site name.
 
-    Categories beat a geographic radius for corpus quality, because they are
-    curated as "images *of* this place" rather than "images taken near it".
-    A 400 m radius around a station returns a vending machine, a bin
-    collection and a commemorative plaque -- all genuinely nearby, none of
-    them useful for recognising the building.
+    OFF BY DEFAULT. Categories look like the better source -- they are
+    curated as "images *of* this place" rather than "images taken near it",
+    and a radius search does return a vending machine and a bin collection.
+    Measured head-to-head on thirteen identical sites, they are nonetheless
+    worse:
+
+        harvest strategy      fabrication    genuine matches found
+        Commons categories        5%                 14%
+        geographic radius         2%                 45%
+
+    The likely reason is viewpoint. A geotagged photograph is one somebody
+    stood at the place and took, so its viewpoints match those of a query
+    photograph taken the same way. A categorised photograph is often an
+    archival image, a floor plan, an interior detail or a document scan --
+    tidier, and useless for recognising a building from the street.
+
+    Kept as an opt-in for areas whose category trees are genuinely
+    photographic, but the default is the radius.
     """
     if not site_name:
         return None
@@ -200,6 +213,7 @@ def _image_path(site_dir: Path, title: str) -> Path:
 
 def harvest_site(client: httpx.Client, area: str, site: dict[str, Any],
                  *, per_site: int = 60, radius_m: int = 500,
+                 use_categories: bool = False,
                  stats: HarvestStats | None = None) -> list[dict[str, Any]]:
     """Fetch reference imagery for one site. Resumable: existing files are kept."""
     stats = stats or HarvestStats()
@@ -208,12 +222,13 @@ def harvest_site(client: httpx.Client, area: str, site: dict[str, Any],
     site_dir = area_dir(area) / "images" / safe_id
     site_dir.mkdir(parents=True, exist_ok=True)
 
-    # Category first (precise), then geosearch to fill out coverage. The
-    # union is both cleaner and broader than either alone.
+    # Radius search is the default and the primary source; see
+    # `find_category` for the measurement behind that choice. Categories are
+    # unioned in only when explicitly asked for.
     found: list[dict[str, Any]] = []
     seen_titles: set[str] = set()
 
-    category = find_category(client, str(site.get("name", "")))
+    category = find_category(client, str(site.get("name", ""))) if use_categories else None
     if category:
         time.sleep(API_PAUSE)
         for title in category_files(client, category, limit=per_site):
@@ -271,7 +286,7 @@ def harvest_site(client: httpx.Client, area: str, site: dict[str, Any],
 
 
 def harvest(area: str, sites: list[dict[str, Any]], *, per_site: int = 60,
-            radius_m: int = 500, progress=None) -> tuple[list[dict[str, Any]], HarvestStats]:
+            radius_m: int = 500, use_categories: bool = False, progress=None) -> tuple[list[dict[str, Any]], HarvestStats]:
     """Harvest reference imagery for a list of sites into one named area."""
     if not SETTINGS.net_allowed():
         raise OfflineError("Corpus building needs network access; offline mode is on.")
@@ -290,7 +305,8 @@ def harvest(area: str, sites: list[dict[str, Any]], *, per_site: int = 60,
                 progress(f"[{i}/{len(sites)}] {site.get('name') or site['site_id'] if 'site_id' in site else site.get('name','site')}")
             try:
                 fresh = harvest_site(client, area, site, per_site=per_site,
-                                     radius_m=radius_m, stats=stats)
+                                     radius_m=radius_m,
+                                     use_categories=use_categories, stats=stats)
             except Exception as exc:
                 stats.notes.append(f"{site.get('name','site')}: {type(exc).__name__}")
                 continue
