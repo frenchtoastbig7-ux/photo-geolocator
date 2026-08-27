@@ -760,3 +760,112 @@ def test_candidates_are_named_by_site_not_cell(grid):
     # Exact site coordinates, not the cell centre.
     assert abs(cands[0].lat - (-28.0730)) < 1e-6
     assert abs(cands[0].lon - 153.4165) < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Analyst brief
+# ---------------------------------------------------------------------------
+
+def _bare_report(**kw):
+    from geoloc.models import CaseReport, ImageFacts
+
+    base = {
+        "case_id": "t",
+        "created_utc": datetime(2024, 1, 1, tzinfo=UTC),
+        "image": ImageFacts(path="/x.jpg", filename="x.jpg", sha256="0" * 64,
+                            bytes=1, width=10, height=10, format="JPEG",
+                            mode="RGB"),
+    }
+    base.update(kw)
+    return CaseReport(**base)
+
+
+def test_brief_refuses_to_localise_a_country_level_result():
+    """The headline must not name a place the evidence does not support."""
+    from geoloc.models import Candidate
+    from geoloc.summary import build_summary
+
+    rep = _bare_report(
+        precision_band="country", credible_area_km2=5_000_000.0,
+        top_countries=[("AU", 0.9)],
+        candidates=[Candidate(rank=1, lat=-19.3, lon=146.8, score=0.007,
+                              label="James Cook University (Kirwan, AU)",
+                              country="AU")])
+    sm = build_summary(rep)
+    assert "not evidence-backed" in sm["assessment"].lower() or \
+           "not localised" in sm["assessment"].lower()
+    assert "James Cook" not in sm["location"], (
+        "a country-level result presented a specific site as the location")
+    assert "indicative only" in sm["coordinates"]
+
+
+def test_brief_localises_when_the_evidence_supports_it():
+    from geoloc.models import Candidate
+    from geoloc.summary import build_summary
+
+    rep = _bare_report(
+        precision_band="locality", credible_area_km2=900.0,
+        top_countries=[("HR", 0.98)],
+        candidates=[Candidate(rank=1, lat=45.8125, lon=15.975, score=0.53,
+                              label="Centar, HR", country="HR")])
+    sm = build_summary(rep)
+    assert "Centar" in sm["location"]
+    assert "indicative only" not in sm["coordinates"]
+
+
+def test_scene_readings_are_attributed_not_asserted():
+    """Scene-model output must never read as observed fact.
+
+    Regression: the brief described a Gold Coast university campus as "a
+    beach with sub saharan african housing and hot desert vegetation" -- four
+    confident assertions, all wrong, from softmax scores above 0.55.
+    """
+    from geoloc.summary import describe_scene
+
+    rep = _bare_report(evidence=[
+        Evidence(id="clip.biome", analyzer="scene", title="b",
+                 raw={"ranked": [["hot desert", 0.73]]}),
+        Evidence(id="clip.architecture", analyzer="scene", title="a",
+                 raw={"ranked": [["sub saharan african housing", 0.57]]}),
+    ])
+    text = describe_scene(rep)
+    assert "Scene model readings" in text
+    assert "unreliable" in text.lower()
+    assert not text.startswith("Appears to show"), (
+        "model guesses are being asserted as description")
+
+
+def test_brief_time_of_day_prefers_exif_then_solar_then_says_nothing():
+    from geoloc.summary import estimate_time_of_day
+
+    empty = _bare_report()
+    assert estimate_time_of_day(empty, shadow_azimuth=None,
+                                capture_date=None)["method"] == "none"
+
+    with_exif = _bare_report(evidence=[
+        Evidence(id="meta.timestamp", analyzer="metadata", title="t",
+                 raw={"datetime_original": "2024:06:21 14:30:00",
+                      "offset": "+02:00"})])
+    got = estimate_time_of_day(with_exif, shadow_azimuth=None, capture_date=None)
+    assert got["method"] == "exif" and "2024:06:21" in got["local_time"]
+
+
+def test_solar_solver_recovers_time_of_day_from_a_shadow():
+    """Given a location and a shadow bearing, the sun dates the photograph.
+
+    Ground truth: 09:30 AEST at Bond University on 2024-08-15 is 23:30 UTC on
+    the 14th; the bearing is computed from the solver and fed back in.
+    """
+    from geoloc.analyzers.solar import local_solar_time, solar_position, to_julian_day
+
+    lat, lon = -28.073, 153.417
+    truth = datetime(2024, 8, 14, 23, 30, tzinfo=UTC)
+    _el, az = solar_position(to_julian_day(truth), np.array([lat]), np.array([lon]))
+    shadow = (float(az[0]) + 180.0) % 360.0
+
+    solved = local_solar_time(lat, lon, datetime(2024, 8, 14, tzinfo=UTC), shadow)
+    assert solved is not None
+    instant, elevation, err = solved
+    assert abs((instant - truth).total_seconds()) <= 600, instant
+    assert err < 1.0
+    assert elevation > 0

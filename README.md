@@ -219,6 +219,24 @@ under. Those are yours to satisfy; the tool will not assess them for you.
 
 ---
 
+## The intelligence brief
+
+Every case opens with a digest rather than a coordinate list:
+
+- **Assessment** — a location only when the precision band supports one. At
+  country level it says so instead of naming a place.
+- **Coordinates**, marked *indicative only* when not evidence-backed.
+- **Time of day** — the EXIF timestamp if one survived; otherwise, given a
+  measured shadow bearing and a candidate location, the sun is solved
+  backwards to the instant that casts it (recovers a known 09:30 to within
+  the 5-minute search step). If neither, it says so.
+- **Description** — text actually read from the image, kept separate from
+  scene-model readings, which are attributed and scored rather than asserted.
+  That separation is deliberate: on a Gold Coast campus this model reported
+  "hot desert" vegetation at 73% and "sub saharan african housing" at 57%.
+- **Provenance** — camera, editing software, metadata stripping.
+- **Recommended next steps**, chosen from how the case actually landed.
+
 ## Reading the output
 
 Every case reports a **precision band** — the area of the smallest region
@@ -262,6 +280,12 @@ imagery of the area, which is a different capability from anything here.
 rejected: on a Gold Coast campus photo the model ranked Wollongong 25%,
 Gold Coast 7%, and put Western Australia above Queensland. That is noise, and
 folding it into the posterior would only add confident error.
+
+**Ranking within a shortlist.** The facility gazetteer narrows a campus
+photo to ~850 Australian universities, and the right one is in that list —
+but nothing here can tell one campus from another. That needs reference
+imagery of the candidates, which is the difference between this tool and a
+reverse image search: a corpus, not a cleverer model.
 
 **The reliable route to a specific place is text.** Legible distinctive
 signage, geocoded, is what takes a case from `country` to `locality`. Generic

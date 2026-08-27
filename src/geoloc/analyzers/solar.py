@@ -220,3 +220,59 @@ def analyze(grid, *, when_utc: datetime | None = None,
             confidence=conf, note="solar position likelihood",
         )],
     )]
+
+
+def local_solar_time(lat: float, lon: float, date: datetime,
+                     shadow_azimuth: float,
+                     sun_elevation: float | None = None,
+                     step_minutes: int = 5) -> tuple[datetime, float, float] | None:
+    """When, on `date`, would a shadow at this place point that way?
+
+    Runs the solar solver forwards over the day at a candidate location and
+    returns the instant whose predicted shadow best matches the observed
+    bearing. This is the inverse of the geolocation use: once a location is
+    proposed, the same geometry dates the photograph.
+
+    Returns (utc_instant, solar_elevation_deg, bearing_error_deg), or None if
+    the sun is never in the right part of the sky that day -- which is itself
+    informative, since it rules the candidate out.
+    """
+    sun_azimuth = (shadow_azimuth + 180.0) % 360.0
+    base = date.replace(hour=0, minute=0, second=0, microsecond=0,
+                        tzinfo=UTC)
+    jd0 = to_julian_day(base)
+
+    lat_a = np.array([lat])
+    lon_a = np.array([lon])
+    best: tuple[datetime, float, float] | None = None
+
+    steps = int(24 * 60 / step_minutes)
+    for i in range(steps):
+        jd = jd0 + (i * step_minutes) / (24.0 * 60.0)
+        el, az = solar_position(jd, lat_a, lon_a)
+        elevation = float(el[0])
+        if elevation <= 0.5:          # sun down: no shadow to cast
+            continue
+        err = abs(float(_angular_diff(az, sun_azimuth)[0]))
+        if sun_elevation is not None:
+            err += abs(elevation - sun_elevation)
+        if best is None or err < best[2]:
+            from datetime import timedelta
+            best = (base + timedelta(minutes=i * step_minutes), elevation, err)
+    return best
+
+
+def solar_noon_utc(lat: float, lon: float, date: datetime) -> datetime | None:
+    """UTC instant of local solar noon, for converting to local solar time."""
+    base = date.replace(hour=0, minute=0, second=0, microsecond=0,
+                        tzinfo=UTC)
+    jd0 = to_julian_day(base)
+    lat_a, lon_a = np.array([lat]), np.array([lon])
+    best = None
+    for i in range(24 * 12):          # 5-minute resolution
+        jd = jd0 + (i * 5) / (24.0 * 60.0)
+        el, _ = solar_position(jd, lat_a, lon_a)
+        if best is None or float(el[0]) > best[1]:
+            from datetime import timedelta
+            best = (base + timedelta(minutes=i * 5), float(el[0]))
+    return best[0] if best else None

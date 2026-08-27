@@ -161,6 +161,9 @@ class CaseReport(BaseModel):
     precision_band: str = ""
     """pinpoint | locality | regional | country | unconstrained"""
     precision_note: str = ""
+    summary: dict[str, Any] = Field(default_factory=dict)
+    """Analyst-facing digest: assessment, coordinates, time of day, scene
+    description, provenance and recommended next steps."""
 
     def evidence_by_id(self, eid: str) -> Evidence | None:
         return next((e for e in self.evidence if e.id == eid), None)

@@ -98,6 +98,25 @@ def analyze(
             continue
         console.print(f"[yellow]![/] {w}\n")
 
+    sm = rep.summary or {}
+    if sm:
+        console.print(Panel(
+            f"[bold]{sm.get('assessment','')}[/]\n\n"
+            f"[cyan]Location[/]     {sm.get('location','—')}\n"
+            f"[cyan]Coordinates[/]  {sm.get('coordinates','—')}\n"
+            f"[cyan]Countries[/]    {', '.join(sm.get('countries') or []) or '—'}\n"
+            f"[cyan]Time of day[/]  {sm.get('time_of_day',{}).get('text','—')}\n"
+            f"[cyan]People[/]       {sm.get('people_present',0)} face(s) detected\n\n"
+            f"[cyan]Scene[/]\n{sm.get('description','—')}\n"
+            + ("\n[cyan]Text observed[/]\n" + "; ".join(sm.get('observed_text') or [])
+               if sm.get('observed_text') else "")
+            + (("\n\n[cyan]Provenance[/]\n" + "\n".join(f"· {n}" for n in sm['provenance']))
+               if sm.get('provenance') else "")
+            + (("\n\n[cyan]Recommended next steps[/]\n"
+                + "\n".join(f"{i}. {n}" for i, n in enumerate(sm['next_steps'], 1)))
+               if sm.get('next_steps') else ""),
+            title="Intelligence brief", expand=False))
+
     band_style = {
         "pinpoint": "bold green", "locality": "green", "regional": "yellow",
         "country": "bold red", "unconstrained": "bold red",

@@ -244,6 +244,25 @@ function render(data) {
   $('empty').classList.add('hidden');
   $('results').classList.remove('hidden');
 
+  const sm = state.case.summary || {};
+  $('brief').innerHTML = !sm.assessment ? '' : `
+    <h2>Intelligence brief</h2>
+    <div class="brief">
+      <p class="assess">${esc(sm.assessment)}</p>
+      <table class="kv">
+        <tr><th>Location</th><td>${esc(sm.location || '—')}</td></tr>
+        <tr><th>Coordinates</th><td><code>${esc(sm.coordinates || '—')}</code></td></tr>
+        <tr><th>Countries</th><td>${esc((sm.countries || []).join(', ') || '—')}</td></tr>
+        <tr><th>Time of day</th><td>${esc((sm.time_of_day || {}).text || '—')}</td></tr>
+        <tr><th>People</th><td>${sm.people_present || 0} face(s) detected</td></tr>
+      </table>
+      ${sm.description ? `<p class="desc">${esc(sm.description)}</p>` : ''}
+      ${(sm.provenance || []).length ? '<p class="lbl">Provenance</p><ul>' +
+        sm.provenance.map(n => `<li>${esc(n)}</li>`).join('') + '</ul>' : ''}
+      ${(sm.next_steps || []).length ? '<p class="lbl">Recommended next steps</p><ol>' +
+        sm.next_steps.map(n => `<li>${esc(n)}</li>`).join('') + '</ol>' : ''}
+    </div>`;
+
   $('warnings').innerHTML = (state.case.warnings || [])
     .map(w => `<div class="warn-box">${esc(w)}</div>`).join('');
 

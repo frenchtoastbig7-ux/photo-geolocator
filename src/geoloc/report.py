@@ -42,6 +42,7 @@ img.shot{max-width:100%;border-radius:8px;border:1px solid var(--line)}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
 @media(max-width:760px){.grid{grid-template-columns:1fr}}
 .detail{color:var(--muted);font-size:.86rem;white-space:pre-wrap;margin-top:.3rem}
+ul,ol{margin:.3rem 0 .3rem 1.2rem}
 code{background:rgba(127,127,127,.12);padding:.1rem .3rem;border-radius:4px;
 font-size:.85em;word-break:break-all}
 .scroll{overflow-x:auto}
@@ -75,6 +76,28 @@ def render_report(report: CaseReport, case_dir: Path) -> str:
     # ---- warnings -------------------------------------------------------
     for w in report.warnings:
         a(f"<div class='card warn'><strong>Caution</strong><div class='detail'>{_esc(w)}</div></div>")
+
+    # ---- intelligence brief ------------------------------------------------
+    sm = report.summary or {}
+    if sm:
+        a("<h2>Intelligence brief</h2><div class='card'>")
+        a(f"<p><strong>{_esc(sm.get('assessment',''))}</strong></p><table>")
+        for k, v in (("Location", sm.get("location", "")),
+                     ("Coordinates", sm.get("coordinates", "")),
+                     ("Countries", ", ".join(sm.get("countries") or []) or "—"),
+                     ("Time of day", (sm.get("time_of_day") or {}).get("text", "—")),
+                     ("People present", f"{sm.get('people_present', 0)} face(s)")):
+            a(f"<tr><th>{k}</th><td>{_esc(v)}</td></tr>")
+        a("</table>")
+        if sm.get("description"):
+            a(f"<div class='detail'>{_esc(sm['description'])}</div>")
+        if sm.get("provenance"):
+            a("<p><strong>Provenance</strong></p><ul>"
+              + "".join(f"<li>{_esc(n)}</li>" for n in sm["provenance"]) + "</ul>")
+        if sm.get("next_steps"):
+            a("<p><strong>Recommended next steps</strong></p><ol>"
+              + "".join(f"<li>{_esc(n)}</li>" for n in sm["next_steps"]) + "</ol>")
+        a("</div>")
 
     # ---- imagery ---------------------------------------------------------
     a("<h2>Imagery</h2><div class='grid'>")

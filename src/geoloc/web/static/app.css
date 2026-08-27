@@ -173,3 +173,18 @@ h2:first-child{margin-top:0}
 .precision.ok{border-left-color:var(--ok)}
 .precision.weak{border-left-color:var(--warn);background:var(--warn-bg);color:var(--warn)}
 .precision .pnote{margin-top:.2rem;font-size:.79rem;opacity:.9;line-height:1.4}
+
+/* --- intelligence brief ---------------------------------------------- */
+.brief{border:1px solid var(--line);border-radius:9px;padding:.6rem .7rem;background:var(--bg)}
+.brief .assess{font-weight:600;margin:0 0 .5rem;font-size:.87rem;line-height:1.45}
+.brief table.kv{width:100%;font-size:.81rem;margin-bottom:.4rem}
+.brief table.kv th{width:6.5rem;text-align:left;color:var(--muted);font-weight:600;
+  padding:.15rem .4rem .15rem 0;vertical-align:top;text-transform:none;
+  letter-spacing:0;font-size:.81rem;border:0}
+.brief table.kv td{padding:.15rem 0;border:0;vertical-align:top}
+.brief .desc{font-size:.81rem;color:var(--muted);line-height:1.5;margin:.4rem 0}
+.brief .lbl{font-size:.73rem;text-transform:uppercase;letter-spacing:.05em;
+  color:var(--muted);font-weight:600;margin:.55rem 0 .2rem}
+.brief ul,.brief ol{margin:.2rem 0 .2rem 1.1rem;font-size:.81rem;
+  color:var(--muted);line-height:1.5}
+.brief li{margin-bottom:.25rem}

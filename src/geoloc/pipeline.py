@@ -378,6 +378,11 @@ def analyze_image(image_path: Path, *, analyst: AnalystInput | None = None,
             f"{report.credible_area_km2:,.0f} km2. {note}"
         )
 
+    from .summary import build_summary
+    report.summary = build_summary(
+        report, shadow_azimuth=analyst.shadow_azimuth,
+        capture_date=analyst.capture_date or date_only or when_utc)
+
     # ---- persist -----------------------------------------------------------
     np.save(out_dir / "posterior.npy", post.astype(np.float32))
     if not (out_dir / image_path.name).exists():
