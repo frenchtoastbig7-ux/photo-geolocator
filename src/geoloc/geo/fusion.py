@@ -283,3 +283,56 @@ def detect_contradictions(evidence: list[Evidence], grid: WorldGrid,
                     f"file before trusting the ranked candidates."
                 )
     return warnings
+
+EARTH_LAND_KM2 = 148_940_000.0
+
+
+def credible_region_km2(post: np.ndarray, grid: WorldGrid,
+                        mass: float = 0.90) -> float:
+    """Area of the smallest region holding `mass` of the posterior.
+
+    Entropy in bits is the right internal measure but a poor thing to show an
+    analyst: 15.1 against a 17.8-bit uniform world sounds constrained and is
+    not. Square kilometres are directly interpretable -- "90% of the mass is
+    spread over 5 million km2" is unmistakably a country-level answer, and no
+    one mistakes it for a location.
+    """
+    flat = np.sort(post.ravel())[::-1]
+    cum = np.cumsum(flat)
+    cutoff = np.searchsorted(cum, mass) + 1
+    threshold = flat[min(cutoff, flat.size) - 1]
+
+    selected = post >= threshold
+    # Cell area varies with latitude; cell_area is already cos-weighted and
+    # normalised, so scale it back to real area.
+    lat_km = grid.step * 110.574
+    lon_km = grid.step * 111.320 * np.cos(np.radians(grid.lat2d))
+    return float((lat_km * lon_km)[selected].sum())
+
+
+def describe_precision(area_km2: float) -> tuple[str, str]:
+    """Map a credible-region area to a plain-language precision band.
+
+    Returns (band, sentence). The bands are deliberately coarse: the point is
+    to stop an analyst reading a ranked list as an answer when the evidence
+    only supports a continent.
+    """
+    if area_km2 < 25:
+        return ("pinpoint", "Constrained to a specific site.")
+    if area_km2 < 2_500:
+        return ("locality",
+                "Constrained to roughly a town or suburb. The ranked "
+                "candidates are meaningful leads.")
+    if area_km2 < 100_000:
+        return ("regional",
+                "Constrained to a region, not a place. Treat candidates as "
+                "areas to search, not as locations.")
+    if area_km2 < 3_000_000:
+        return ("country",
+                "Country-level only. The ranked candidates are the most "
+                "populated points inside a large area, NOT evidence-backed "
+                "locations -- do not read them as leads.")
+    return ("unconstrained",
+            "Essentially unconstrained. The evidence in this image does not "
+            "establish where it was taken; the candidate list is noise.")
+

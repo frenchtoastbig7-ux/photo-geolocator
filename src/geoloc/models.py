@@ -148,6 +148,13 @@ class CaseReport(BaseModel):
     """Shannon entropy of the posterior. High entropy = the evidence did not
     meaningfully constrain the location; surfaced so the analyst is not
     misled by a confident-looking top candidate."""
+    credible_area_km2: float | None = None
+    """Area of the smallest region holding 90% of the posterior mass. The
+    headline honesty figure: a ranked list drawn from five million square
+    kilometres is not a set of leads."""
+    precision_band: str = ""
+    """pinpoint | locality | regional | country | unconstrained"""
+    precision_note: str = ""
 
     def evidence_by_id(self, eid: str) -> Evidence | None:
         return next((e for e in self.evidence if e.id == eid), None)

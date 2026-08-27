@@ -89,9 +89,25 @@ def analyze(
         title="case", expand=False))
 
     for w in rep.warnings:
+        # The precision warning gets its own prominent block below.
+        if w.startswith("Precision:"):
+            continue
         console.print(f"[yellow]![/] {w}\n")
 
-    t = Table(title="Ranked candidates", show_lines=False)
+    band_style = {
+        "pinpoint": "bold green", "locality": "green", "regional": "yellow",
+        "country": "bold red", "unconstrained": "bold red",
+    }.get(rep.precision_band, "white")
+    if rep.credible_area_km2 is not None:
+        console.print(
+            f"[{band_style}]Precision: {rep.precision_band.upper()}[/] — "
+            f"90% of the posterior covers {rep.credible_area_km2:,.0f} km²\n"
+            f"[dim]{rep.precision_note}[/]\n")
+
+    title = "Ranked candidates"
+    if rep.precision_band in {"country", "unconstrained"}:
+        title = "Ranked candidates (NOT evidence-backed — see precision above)"
+    t = Table(title=title, show_lines=False)
     t.add_column("#", justify="right")
     t.add_column("Location")
     t.add_column("Lat", justify="right")

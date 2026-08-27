@@ -219,6 +219,55 @@ under. Those are yours to satisfy; the tool will not assess them for you.
 
 ---
 
+## Reading the output
+
+Every case reports a **precision band** — the area of the smallest region
+holding 90% of the posterior — because a ranked list looks equally confident
+whether it came from a GPS tag or from nothing at all.
+
+| Band | 90% region | What it means |
+|---|---|---|
+| `pinpoint` | < 25 km² | A specific site. |
+| `locality` | < 2,500 km² | A town or suburb. Candidates are real leads. |
+| `regional` | < 100,000 km² | A region. Candidates are areas to search. |
+| `country` | < 3,000,000 km² | Country-level only. **Candidates are just the most populated points in a large area — not leads.** |
+| `unconstrained` | larger | The image does not establish where it was taken. The list is noise. |
+
+At `country` or `unconstrained` the candidate list is explicitly labelled as
+not evidence-backed, in all three interfaces. This matters more than it
+sounds: a scene-model-only result reaches `country` on almost any photo, and
+the ranked cities underneath it carry no information whatsoever.
+
+## What will not work, and why
+
+**Naming a specific building or campus.** Asking the scene model to choose
+between landmark names does not work, and fails in the most dangerous
+possible way. Measured on this build:
+
+| Image | Top "landmark" match |
+|---|---|
+| A real photo of Bond University | Bond University — 55.8% |
+| A photo of a Croatian bakery | Bond University — **90.3%** |
+| A blank grey image | Bond University — **59.7%** |
+
+CLIP has a prior over the *strings*, not recognition of the *places*. Given
+any candidate list it returns a confident winner regardless of the image, and
+the controls score higher than the true positive. Landmark-name matching is
+therefore deliberately not implemented; it would manufacture identifications.
+
+Genuine landmark recognition needs image-to-image matching against reference
+imagery of the area, which is a different capability from anything here.
+
+**Refining within a country using the scene model.** Also measured and also
+rejected: on a Gold Coast campus photo the model ranked Wollongong 25%,
+Gold Coast 7%, and put Western Australia above Queensland. That is noise, and
+folding it into the posterior would only add confident error.
+
+**The reliable route to a specific place is text.** Legible distinctive
+signage, geocoded, is what takes a case from `country` to `locality`. Generic
+words cannot do it — "LIBRARY" geocodes to a library, just not the right one —
+so they are filtered out rather than turned into a false constraint.
+
 ## Accuracy, honestly
 
 - **EXIF GPS present** — exact, subject to the tag being genuine.

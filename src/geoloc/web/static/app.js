@@ -248,10 +248,24 @@ function render(data) {
     .map(w => `<div class="warn-box">${esc(w)}</div>`).join('');
 
   const e = state.case.entropy_bits;
-  $('entropy').textContent = e == null ? ''
-    : `Posterior entropy ${e.toFixed(2)} bits — lower means better constrained.`;
+  const area = state.case.credible_area_km2;
+  const band = state.case.precision_band || '';
+  const weak = band === 'country' || band === 'unconstrained';
+  $('entropy').innerHTML = area == null ? '' : `
+    <div class="precision ${weak ? 'weak' : 'ok'}">
+      <strong>Precision: ${esc(band.toUpperCase())}</strong>
+      — 90% of the posterior covers ${Math.round(area).toLocaleString()} km²
+      <div class="pnote">${esc(state.case.precision_note || '')}</div>
+    </div>
+    <div class="muted small" style="margin-top:.3rem">
+      Posterior entropy ${e == null ? '—' : e.toFixed(2)} bits.
+    </div>`;
 
-  $('candidates').innerHTML = (state.case.candidates || []).map(c => `
+  const candHeading = weak
+    ? '<p class="warn-box">The candidates below are the most populated points '
+      + 'inside a very large area. They are NOT evidence-backed locations.</p>'
+    : '';
+  $('candidates').innerHTML = candHeading + (state.case.candidates || []).map(c => `
     <div class="cand" data-rank="${c.rank}">
       <span class="rank">${c.rank}</span>
       <span class="body">

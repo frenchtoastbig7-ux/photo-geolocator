@@ -150,25 +150,123 @@ def _iou(a: list[float], b: list[float]) -> float:
     return inter / union if union > 0 else 0.0
 
 
-def _vision_ocr(path: Path) -> list[dict]:
-    """Multi-pass Apple Vision OCR covering every supported writing system."""
-    merged: list[dict] = []
-    for pass_name, languages in OCR_PASSES.items():
+def _merge_block(merged: list[dict], b: dict) -> None:
+    """Insert a block, keeping the more confident of two overlapping reads."""
+    dup = next((m for m in merged if _iou(m["bbox"], b["bbox"]) > 0.4), None)
+    if dup is None:
+        merged.append(b)
+    elif b["confidence"] > dup["confidence"]:
+        merged[merged.index(dup)] = b
+
+
+def _run_passes(path: Path, scripts: list[str]) -> list[dict]:
+    """Run one Vision pass per named script family over a single image."""
+    out: list[dict] = []
+    for name in scripts:
         try:
-            blocks = _vision_pass(path, languages)
+            blocks = _vision_pass(path, OCR_PASSES[name])
         except Exception:
             continue
         for b in blocks:
-            if not b["text"].strip() or not _accepts(b["text"], pass_name):
-                continue
-            b["script_pass"] = pass_name
-            # Two passes reading the same region keep the more confident read.
-            dup = next((m for m in merged
-                        if _iou(m["bbox"], b["bbox"]) > 0.5), None)
-            if dup is None:
-                merged.append(b)
-            elif b["confidence"] > dup["confidence"]:
-                merged[merged.index(dup)] = b
+            if b["text"].strip() and _accepts(b["text"], name):
+                b["script_pass"] = name
+                out.append(b)
+    return out
+
+
+# A shopfront or street sign occupies a small fraction of a wide photograph,
+# and Vision simply does not return it: the signage in a 1652x1266 campus
+# photo reads as nothing full-frame, yet reads correctly once the region is
+# cropped and enlarged. Since legible text is usually the single most
+# decisive geolocation cue, missing all of it is the worst failure this tool
+# can have -- so large images are also scanned as overlapping tiles.
+TILE_MIN_PIXELS = 900 * 700
+TILE_GRID = (3, 3)
+TILE_OVERLAP = 0.25
+TILE_UPSCALE = 2
+
+
+def _tiled_ocr(path: Path, scripts: list[str]) -> list[dict]:
+    """OCR overlapping enlarged tiles, mapped back to whole-image coordinates."""
+    import tempfile
+
+    from PIL import Image
+
+    merged: list[dict] = []
+    with Image.open(path) as im:
+        im = im.convert("RGB")
+        width, height = im.size
+        cols, rows = TILE_GRID
+        pad_x = int(width / cols * TILE_OVERLAP)
+        pad_y = int(height / rows * TILE_OVERLAP)
+
+        with tempfile.TemporaryDirectory(prefix="geoloc-ocr-") as tmp:
+            tmp_dir = Path(tmp)
+            for row in range(rows):
+                for col in range(cols):
+                    x0 = max(0, int(col * width / cols) - pad_x)
+                    x1 = min(width, int((col + 1) * width / cols) + pad_x)
+                    y0 = max(0, int(row * height / rows) - pad_y)
+                    y1 = min(height, int((row + 1) * height / rows) + pad_y)
+                    if x1 - x0 < 40 or y1 - y0 < 40:
+                        continue
+
+                    tile = im.crop((x0, y0, x1, y1))
+                    tile = tile.resize(
+                        (tile.width * TILE_UPSCALE, tile.height * TILE_UPSCALE),
+                        Image.LANCZOS)
+                    tile_path = tmp_dir / f"tile_{col}_{row}.png"
+                    tile.save(tile_path)
+
+                    for b in _run_passes(tile_path, scripts):
+                        # Vision returns normalised, bottom-left-origin boxes
+                        # relative to the tile; re-express them against the
+                        # whole image so dedup and reporting stay consistent.
+                        tx, ty, tw, th = b["bbox"]
+                        tile_w = x1 - x0
+                        tile_h = y1 - y0
+                        b["bbox"] = [
+                            (x0 + tx * tile_w) / width,
+                            (y0 / height) + ty * (tile_h / height),
+                            tw * tile_w / width,
+                            th * tile_h / height,
+                        ]
+                        b["tiled"] = True
+                        _merge_block(merged, b)
+    return merged
+
+
+def _vision_ocr(path: Path) -> list[dict]:
+    """Multi-pass Apple Vision OCR covering every supported writing system.
+
+    Two stages: a whole-image pass per script family, then -- for images big
+    enough for it to matter -- a tiled rescan that recovers small signage the
+    whole-image pass cannot see.
+    """
+    merged: list[dict] = []
+    for b in _run_passes(path, list(OCR_PASSES)):
+        _merge_block(merged, b)
+
+    try:
+        from PIL import Image
+
+        with Image.open(path) as im:
+            big_enough = im.size[0] * im.size[1] >= TILE_MIN_PIXELS
+    except Exception:
+        return merged
+
+    if not big_enough:
+        return merged
+
+    # Tiling multiplies the pass count by the number of tiles, so restrict it
+    # to the scripts actually seen full-frame. When nothing was seen at all --
+    # precisely the case this exists to fix -- fall back to the scripts that
+    # cover most of the world's signage.
+    seen = {b["script_pass"] for b in merged}
+    scripts = sorted(seen) if seen else ["Latin", "Han", "Cyrillic", "Arabic"]
+
+    for b in _tiled_ocr(path, scripts):
+        _merge_block(merged, b)
     return merged
 
 

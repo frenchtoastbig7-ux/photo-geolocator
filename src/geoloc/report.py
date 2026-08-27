@@ -103,6 +103,13 @@ def render_report(report: CaseReport, case_dir: Path) -> str:
 
     # ---- candidates ------------------------------------------------------
     a("<h2>Ranked candidates</h2>")
+    if report.credible_area_km2 is not None:
+        weak = report.precision_band in {"country", "unconstrained"}
+        cls = "card warn" if weak else "card"
+        a(f"<div class='{cls}'><strong>Precision: "
+          f"{_esc(report.precision_band.upper())}</strong> &mdash; 90% of the "
+          f"posterior covers {report.credible_area_km2:,.0f} km&sup2;"
+          f"<div class='detail'>{_esc(report.precision_note)}</div></div>")
     if report.entropy_bits is not None:
         a(f"<div class='detail' style='margin-bottom:.6rem'>Posterior entropy "
           f"{report.entropy_bits:.2f} bits &mdash; lower means better constrained.</div>")

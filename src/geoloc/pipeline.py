@@ -20,7 +20,7 @@ from PIL import Image
 
 from .analyzers import clip_scene, faces, metadata, solar, text_ocr
 from .config import SETTINGS
-from .geo import fusion
+from .geo import fusion, textgeo
 from .geo.grid import world_grid
 from .models import (
     CaseReport,
@@ -143,6 +143,7 @@ def _exif_datetime(evidence: list[Evidence]) -> tuple[datetime | None, datetime 
 
 def analyze_image(image_path: Path, *, analyst: AnalystInput | None = None,
                   run_scene_model: bool = True, use_habitation_prior: bool = True,
+                  auto_geocode: bool = True,
                   case_dir: Path | None = None, n_candidates: int = 8,
                   progress=None) -> CaseReport:
     """Full analysis of a single image. Returns a saved, complete CaseReport."""
@@ -237,24 +238,49 @@ def analyze_image(image_path: Path, *, analyst: AnalystInput | None = None,
     report.evidence.extend(_analyst_evidence(analyst))
 
     # ---- fuse -------------------------------------------------------------
+    # Two passes. The first establishes which countries are plausible; that
+    # shortlist is what makes geocoding image text useful, since the same
+    # shop name exists in fifty countries. The second pass folds the
+    # resulting coordinates back in.
     tick("fusing evidence")
     post, grid = fusion.fuse(report.evidence, grid=grid, heatmaps=heatmaps,
                              use_habitation_prior=use_habitation_prior)
+    report.top_countries = fusion.top_countries(post, grid)
+
+    if auto_geocode and SETTINGS.net_allowed():
+        tick("geocoding image text")
+        shortlist = [cc for cc, share in report.top_countries[:5] if share > 0.02]
+        try:
+            geo_ev = textgeo.geocode_evidence(report.evidence, shortlist or None)
+        except Exception as exc:
+            report.analyzers_skipped["geocode"] = str(exc)
+            geo_ev = []
+        if geo_ev:
+            report.evidence.extend(geo_ev)
+            report.analyzers_run.append("geocode")
+            tick("re-fusing with geocoded text")
+            post, grid = fusion.fuse(report.evidence, grid=grid, heatmaps=heatmaps,
+                                     use_habitation_prior=use_habitation_prior)
+            report.top_countries = fusion.top_countries(post, grid)
+    elif auto_geocode:
+        report.analyzers_skipped["geocode"] = "offline mode"
+
     report.candidates = fusion.extract_candidates(
         post, grid, n=n_candidates, evidence=report.evidence)
-    report.top_countries = fusion.top_countries(post, grid)
     report.entropy_bits = fusion.posterior_entropy_bits(post)
 
     for msg in fusion.detect_contradictions(report.evidence, grid, heatmaps):
         report.warnings.append(msg)
 
-    uniform = fusion.uniform_entropy_bits(grid)
-    if report.entropy_bits > uniform - 2.0:
+    report.credible_area_km2 = fusion.credible_region_km2(post, grid)
+    band, note = fusion.describe_precision(report.credible_area_km2)
+    report.precision_band = band
+    report.precision_note = note
+
+    if band in {"country", "unconstrained"}:
         report.warnings.append(
-            f"Posterior entropy is {report.entropy_bits:.1f} bits against "
-            f"{uniform:.1f} for a uniform world. The evidence barely "
-            "constrains location -- treat the ranked candidates as noise, not "
-            "as leads."
+            f"Precision: {band.upper()}. 90% of the posterior covers "
+            f"{report.credible_area_km2:,.0f} km2. {note}"
         )
 
     # ---- persist -----------------------------------------------------------

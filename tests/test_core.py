@@ -536,3 +536,137 @@ def test_scene_analyzer_reports_missing_model_as_evidence(tmp_path, monkeypatch)
     assert len(evidence) == 1
     assert evidence[0].id == "clip.unavailable"
     assert evidence[0].constraints == [], "an absent model must not constrain location"
+
+
+# ---------------------------------------------------------------------------
+# Precision reporting
+# ---------------------------------------------------------------------------
+
+def test_credible_area_separates_a_point_from_a_continent(grid):
+    """The headline honesty figure must actually discriminate.
+
+    Regression: entropy alone did not. A country-level result scored 15.1
+    bits against a 17.8-bit uniform world, which sounds constrained, so the
+    warning never fired and a ranked list of unrelated cities was presented
+    as though it were a set of leads.
+    """
+    from geoloc.geo.fusion import credible_region_km2, describe_precision
+
+    uniform = grid.cell_area / grid.cell_area.sum()
+    tight = np.exp(-((grid.lat2d - 45.8) ** 2 + (grid.lon2d - 16.0) ** 2) / 0.02)
+    tight = tight * grid.cell_area
+    tight /= tight.sum()
+
+    area_uniform = credible_region_km2(uniform, grid)
+    area_tight = credible_region_km2(tight, grid)
+    assert area_tight < area_uniform / 1000
+    assert describe_precision(area_uniform)[0] == "unconstrained"
+    assert describe_precision(area_tight)[0] in {"pinpoint", "locality", "regional"}
+
+
+def test_country_only_evidence_is_reported_as_country_level(grid):
+    """A single country constraint must not read as a located answer."""
+    from geoloc.geo.fusion import credible_region_km2, describe_precision, fuse
+
+    ev = Evidence(
+        id="clip.country", analyzer="scene", title="country",
+        confidence=Confidence.MEDIUM,
+        constraints=[GeoConstraint(kind=ConstraintKind.COUNTRIES,
+                                   country_scores={"AU": 1.0}, floor=0.10,
+                                   confidence=Confidence.MEDIUM)])
+    post, g = fuse([ev], grid=grid)
+    band, _ = describe_precision(credible_region_km2(post, g))
+    assert band in {"country", "unconstrained"}, (
+        f"country-only evidence reported as {band}")
+
+
+def test_precision_bands_are_ordered():
+    from geoloc.geo.fusion import describe_precision
+
+    areas = [1, 500, 50_000, 1_000_000, 50_000_000]
+    bands = [describe_precision(a)[0] for a in areas]
+    assert bands == ["pinpoint", "locality", "regional", "country",
+                     "unconstrained"]
+
+
+# ---------------------------------------------------------------------------
+# Text geocoding
+# ---------------------------------------------------------------------------
+
+def test_generic_signage_is_not_geocoded():
+    """Querying a gazetteer for "LIBRARY" returns a library, just not the
+    right one. Generic words must never become a location constraint."""
+    from geoloc.geo.textgeo import _informative
+
+    for generic in ("LIBRARY", "BUSINESS", "ENTRANCE", "CAR PARK", "Hotel",
+                    "RY", "SINES", "12345", "no"):
+        assert not _informative(generic), f"{generic!r} should be rejected"
+
+    for specific in ("PEKARNA DUBRAVICA", "Bond University", "Ilica 5",
+                     "Restaurante La Habana"):
+        assert _informative(specific), f"{specific!r} should be accepted"
+
+
+def test_candidate_queries_prefers_confident_and_joins_lines():
+    from geoloc.geo.textgeo import candidate_queries
+
+    ev = Evidence(
+        id="ocr.text", analyzer="text", title="text",
+        raw={"blocks": [
+            {"text": "DUBRAVICA", "confidence": 0.9},
+            {"text": "PEKARNA", "confidence": 0.95},
+            {"text": "LIBRARY", "confidence": 0.99},
+        ]})
+    queries = candidate_queries([ev])
+    assert "LIBRARY" not in queries, "generic token leaked into queries"
+    # A shopfront split across lines should also be tried as one phrase.
+    assert any(" " in q for q in queries), f"no joined phrase in {queries}"
+
+
+def test_geocoding_is_blocked_offline(monkeypatch):
+    from geoloc.config import SETTINGS
+    from geoloc.geo import textgeo
+
+    monkeypatch.setattr(SETTINGS, "offline", True)
+    ev = Evidence(id="ocr.text", analyzer="text", title="t",
+                  raw={"blocks": [{"text": "PEKARNA DUBRAVICA", "confidence": 0.9}]})
+    assert textgeo.geocode_evidence([ev]) == []
+
+
+# ---------------------------------------------------------------------------
+# OCR tiling
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(
+    __import__("sys").platform != "darwin", reason="Apple Vision OCR is macOS-only")
+def test_tiled_ocr_reads_small_signage(tmp_path):
+    """Small text in a wide frame must not be silently dropped.
+
+    Regression: Vision returns nothing for signage below roughly 1/32 of the
+    image height, so a campus photo with legible "LIBRARY" lettering scored
+    as "no legible text detected" -- discarding the most valuable cue the
+    tool has.
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    from geoloc.analyzers.text_ocr import run_ocr
+
+    try:
+        font = ImageFont.truetype(
+            "/System/Library/Fonts/Supplemental/Arial Bold.ttf", 26)
+    except OSError:
+        pytest.skip("system font unavailable")
+
+    # 1600x1200 with ~26px lettering: about 2% of image height, under the
+    # threshold at which a whole-image pass reliably sees it.
+    img = Image.new("RGB", (1600, 1200), (205, 200, 190))
+    d = ImageDraw.Draw(img)
+    d.rectangle([180, 520, 700, 580], fill=(238, 236, 230))
+    d.text((200, 536), "PEKARNA DUBRAVICA", fill=(20, 20, 20), font=font)
+    path = tmp_path / "wide.png"
+    img.save(path)
+
+    blocks, engine = run_ocr(path)
+    assert engine == "apple-vision"
+    text = " ".join(b["text"] for b in blocks).upper()
+    assert "DUBRAVICA" in text, f"tiled OCR missed the signage; got {text!r}"

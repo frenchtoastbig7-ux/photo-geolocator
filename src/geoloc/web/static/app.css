@@ -166,3 +166,10 @@ h2:first-child{margin-top:0}
 .linklike{background:none;border:0;color:var(--muted);font-size:.76rem;
   text-decoration:underline;cursor:pointer;padding:0}
 .linklike:hover{color:var(--crit)}
+
+/* --- precision banner ------------------------------------------------ */
+.precision{border:1px solid var(--line);border-left-width:3px;border-radius:7px;
+  padding:.45rem .6rem;font-size:.83rem;background:var(--bg)}
+.precision.ok{border-left-color:var(--ok)}
+.precision.weak{border-left-color:var(--warn);background:var(--warn-bg);color:var(--warn)}
+.precision .pnote{margin-top:.2rem;font-size:.79rem;opacity:.9;line-height:1.4}
