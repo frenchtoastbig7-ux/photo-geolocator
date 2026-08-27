@@ -133,6 +133,64 @@ def resolve_thumbs(client: httpx.Client, titles: list[str]) -> dict[str, str]:
     return urls
 
 
+def find_category(client: httpx.Client, site_name: str) -> str | None:
+    """Best-matching Commons category for a site name.
+
+    Categories beat a geographic radius for corpus quality, because they are
+    curated as "images *of* this place" rather than "images taken near it".
+    A 400 m radius around a station returns a vending machine, a bin
+    collection and a commemorative plaque -- all genuinely nearby, none of
+    them useful for recognising the building.
+    """
+    if not site_name:
+        return None
+    data = _get_json(client, {
+        "action": "query", "format": "json", "list": "search",
+        "srsearch": site_name, "srnamespace": "14", "srlimit": "5",
+    })
+    if not data:
+        return None
+    hits = [x["title"] for x in data.get("query", {}).get("search", [])]
+    if not hits:
+        return None
+    # Prefer a category whose name contains the site name over a tangential
+    # one ("Category:CitizenM Paris Gare de Lyon" is a hotel, not the station).
+    key = site_name.lower().split("(")[0].strip()
+    exact = [h for h in hits if key in h.lower()]
+    return (exact or hits)[0]
+
+
+def category_files(client: httpx.Client, category: str, *, limit: int = 120,
+                   depth: int = 1) -> list[str]:
+    """File titles in a category, descending one level into subcategories.
+
+    Depth matters: a station's own category is often near-empty while its
+    subcategories ("Interior of...", "Platforms of...") hold everything.
+    """
+    titles: list[str] = []
+    subcats: list[str] = []
+
+    data = _get_json(client, {
+        "action": "query", "format": "json", "list": "categorymembers",
+        "cmtitle": category, "cmlimit": "500",
+    })
+    time.sleep(API_PAUSE)
+    if not data:
+        return []
+    for member in data.get("query", {}).get("categorymembers", []):
+        if member.get("ns") == 6:
+            titles.append(member["title"])
+        elif member.get("ns") == 14:
+            subcats.append(member["title"])
+
+    if depth > 0:
+        for sub in subcats[:6]:
+            if len(titles) >= limit:
+                break
+            titles.extend(category_files(client, sub, limit=limit, depth=depth - 1))
+    return titles[:limit]
+
+
 def _image_path(site_dir: Path, title: str) -> Path:
     import hashlib
 
@@ -150,7 +208,27 @@ def harvest_site(client: httpx.Client, area: str, site: dict[str, Any],
     site_dir = area_dir(area) / "images" / safe_id
     site_dir.mkdir(parents=True, exist_ok=True)
 
-    found = discover_files(client, site["lat"], site["lon"], radius_m, per_site)
+    # Category first (precise), then geosearch to fill out coverage. The
+    # union is both cleaner and broader than either alone.
+    found: list[dict[str, Any]] = []
+    seen_titles: set[str] = set()
+
+    category = find_category(client, str(site.get("name", "")))
+    if category:
+        time.sleep(API_PAUSE)
+        for title in category_files(client, category, limit=per_site):
+            if title not in seen_titles:
+                seen_titles.add(title)
+                found.append({"title": title, "lat": site["lat"],
+                              "lon": site["lon"], "dist_m": None,
+                              "source": "category"})
+
+    for f in discover_files(client, site["lat"], site["lon"], radius_m, per_site):
+        if f["title"] not in seen_titles:
+            seen_titles.add(f["title"])
+            f["source"] = "geosearch"
+            found.append(f)
+
     stats.discovered += len(found)
     if not found:
         return []
@@ -185,6 +263,7 @@ def harvest_site(client: httpx.Client, area: str, site: dict[str, Any],
             "site_id": str(site_id), "site_name": site.get("name", ""),
             "site_lat": site["lat"], "site_lon": site["lon"],
             "title": f["title"], "path": str(dest),
+            "source": f.get("source", "geosearch"),
             "img_lat": f.get("lat"), "img_lon": f.get("lon"),
             "dist_m": f.get("dist_m"),
         })

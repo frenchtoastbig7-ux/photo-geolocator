@@ -1084,3 +1084,35 @@ def test_vpr_match_labels_the_candidate_by_site_name():
     cands = extract_candidates(post, g, n=2, evidence=[ev])
     assert cands and "Marseille Saint-Charles" in cands[0].label
     assert abs(cands[0].lat - 43.3033) < 1e-6
+
+
+def test_corpus_prefers_curated_categories_over_a_radius():
+    """Corpus quality is the accuracy bottleneck, so harvesting must lead
+    with categories.
+
+    A 400 m radius around a station returns a vending machine, a bin
+    collection and a commemorative plaque -- all genuinely nearby, none
+    useful for recognising the place. Commons categories are curated as
+    images *of* a subject, so they are queried first and the radius only
+    fills out coverage.
+    """
+    import inspect
+
+    from geoloc.vpr import corpus
+
+    src = inspect.getsource(corpus.harvest_site)
+    cat_at = src.index("find_category")
+    geo_at = src.index("discover_files")
+    assert cat_at < geo_at, "category lookup must precede the radius search"
+    assert hasattr(corpus, "category_files")
+
+
+def test_category_traversal_descends_into_subcategories():
+    """A station's own category is often near-empty while its subcategories
+    hold everything, so one level of descent is required."""
+    import inspect
+
+    from geoloc.vpr import corpus
+
+    sig = inspect.signature(corpus.category_files)
+    assert sig.parameters["depth"].default >= 1

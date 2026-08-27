@@ -256,6 +256,36 @@ not evidence-backed, in all three interfaces. This matters more than it
 sounds: a scene-model-only result reaches `country` on almost any photo, and
 the ranked cities underneath it carry no information whatsoever.
 
+## Visual place recognition
+
+The only component that can name a specific place. It matches the photograph
+against harvested reference imagery rather than asking a model to pick a
+label, which is why it can be trusted at all — and why it is useless outside
+the areas you have harvested.
+
+```bash
+geoloc corpus build fr-rail --country FR --facility railway \
+    --near "43.3028,5.3806" --radius-km 60 --per-site 70
+geoloc corpus calibrate --area fr-rail      # measure before trusting it
+geoloc corpus match photo.jpg --area fr-rail
+```
+
+Reference imagery comes from Wikimedia Commons: the site's own category
+first (curated as images *of* the place), then a geographic radius to fill
+out coverage. Descriptors come from MegaLoc, a model trained for place
+recognition rather than semantic similarity.
+
+**Calibrate every corpus before relying on it.** `corpus calibrate` is
+leave-one-*site*-out, not leave-one-image-out: it removes a site wholesale
+and checks the tool refuses to name it. That open-set case is the real one —
+the photographed place is usually absent from any corpus you have — and the
+number it reports is how often this corpus fabricates an identification.
+
+Current thresholds were chosen from that sweep by fabrication rate: **2.9%
+fabrication, ~36% of genuine matches accepted.** Two thirds of true matches
+are discarded deliberately. A wrong identification costs an investigation far
+more than an absent one.
+
 ## What will not work, and why
 
 **Naming a specific building or campus.** Asking the scene model to choose
@@ -281,7 +311,21 @@ rejected: on a Gold Coast campus photo the model ranked Wollongong 25%,
 Gold Coast 7%, and put Western Australia above Queensland. That is noise, and
 folding it into the posterior would only add confident error.
 
-**Ranking within a shortlist.** The facility gazetteer narrows a campus
+**Geometric verification of matches.** The textbook second stage of a VPR
+pipeline — SIFT correspondences plus a RANSAC fundamental matrix — was built
+and measured at **AUC 0.540 on this corpus, barely above chance**, then
+removed. The cause is instructive: when a "site" is defined by a 400 m
+radius, its images show a train, a vending machine, a lounge and a facade.
+Those share no geometry, so there is nothing for verification to find. It
+would become worthwhile only against corpora built from same-structure
+imagery, and the fix is better corpus construction, not a better verifier.
+
+**Filtering a corpus by relevance with CLIP.** Also tried, also measured:
+separation margins of ±0.1, keeping a bin collection and a commemorative
+plaque while discarding good exterior shots. Category-based harvesting is a
+structural fix for the same problem and works better.
+
+**Ranking within a shortlist without reference imagery.** The facility gazetteer narrows a campus
 photo to ~850 Australian universities, and the right one is in that list —
 but nothing here can tell one campus from another. That needs reference
 imagery of the candidates, which is the difference between this tool and a
