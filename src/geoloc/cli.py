@@ -53,6 +53,10 @@ def analyze(
     country: list[str] = typer.Option(None, "--country", help="Restrict to ISO2 country code(s). Repeatable."),
     exclude: list[str] = typer.Option(None, "--exclude", help="Rule out ISO2 country code(s). Repeatable."),
     notes: str = typer.Option("", "--notes", help="Free-text analyst notes for the report."),
+    facility: str = typer.Option(None, "--facility",
+                                 help="Facility type you can identify (e.g. university, "
+                                      "airport, hospital). Narrows to every such site in "
+                                      "the candidate countries. Use --list-facilities."),
     candidates: int = typer.Option(8, "--candidates", "-n"),
     report: bool = typer.Option(True, "--report/--no-report", help="Write an HTML report."),
     json_out: bool = typer.Option(False, "--json", help="Print the full case JSON to stdout."),
@@ -69,7 +73,7 @@ def analyze(
         shadow_azimuth=shadow_azimuth, sun_elevation=sun_elevation,
         object_height=height, shadow_length=shadow_len,
         capture_datetime_utc=_parse_dt(when), capture_date=_parse_dt(date),
-        notes=notes, country_hints=list(country or []),
+        notes=notes, facility_type=facility, country_hints=list(country or []),
         exclude_countries=list(exclude or []),
     )
 
@@ -149,6 +153,20 @@ def analyze(
 
     if json_out:
         console.print_json(rep.model_dump_json())
+
+
+@app.command("list-facilities")
+def list_facilities():
+    """Facility types accepted by `analyze --facility`."""
+    from .geo.facility import FACILITIES
+
+    t = Table(title="Facility types")
+    t.add_column("key")
+    t.add_column("description")
+    t.add_column("triggered by text like")
+    for f in FACILITIES:
+        t.add_row(f.key, f.label, ", ".join(f.keywords[:5]) + " …")
+    console.print(t)
 
 
 @app.command()

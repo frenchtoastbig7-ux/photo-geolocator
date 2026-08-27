@@ -670,3 +670,93 @@ def test_tiled_ocr_reads_small_signage(tmp_path):
     assert engine == "apple-vision"
     text = " ".join(b["text"] for b in blocks).upper()
     assert "DUBRAVICA" in text, f"tiled OCR missed the signage; got {text!r}"
+
+
+# ---------------------------------------------------------------------------
+# Facility gazetteer
+# ---------------------------------------------------------------------------
+
+def test_facility_inference_from_signage():
+    """Generic words are useless for geocoding but strong facility evidence."""
+    from geoloc.geo.facility import infer_facilities
+
+    uni = infer_facilities(["LIBRARY", "BUSINESS", "FACULTY OF LAW"])
+    assert uni and uni[0][0].key == "university"
+
+    air = infer_facilities(["DEPARTURES", "GATE 14", "BAGGAGE RECLAIM"])
+    assert air and air[0][0].key == "airport"
+
+    # A shop name implies no particular facility type; it is geocoded instead.
+    assert infer_facilities(["PEKARNA DUBRAVICA"]) == []
+
+
+def test_sites_constraint_is_disjunctive(grid):
+    """"One of these N places" must be an OR, not an AND.
+
+    Rendering each site as a separate POINT constraint would multiply them
+    together and drive the whole posterior to zero, since no cell is near all
+    of them.
+    """
+    from geoloc.geo.fusion import render_constraint
+
+    sites = [(-28.073, 153.417), (-33.917, 151.231), (-37.798, 144.961)]
+    c = GeoConstraint(kind=ConstraintKind.SITES, sites=sites,
+                      site_radius_km=3.0, floor=1e-4,
+                      confidence=Confidence.MEDIUM)
+    field = render_constraint(c, grid)
+    for lat, lon in sites:
+        r, col = grid.cell_of(lat, lon)
+        assert field[r, col] > field.min(), "a listed site was not favoured"
+    # Somewhere far from every site must be strongly disfavoured.
+    r, col = grid.cell_of(20.0, 0.0)
+    assert field[r, col] < field.max() - 5
+
+
+def test_sites_constraint_narrows_the_credible_area(grid):
+    """A site list must materially shrink the search area."""
+    from geoloc.geo.fusion import credible_region_km2, fuse
+
+    country = Evidence(
+        id="clip.country", analyzer="scene", title="country",
+        confidence=Confidence.MEDIUM,
+        constraints=[GeoConstraint(kind=ConstraintKind.COUNTRIES,
+                                   country_scores={"AU": 1.0}, floor=0.10,
+                                   confidence=Confidence.MEDIUM)])
+    post_before, g = fuse([country], grid=grid)
+
+    sites = Evidence(
+        id="facility.university.AU", analyzer="facility", title="sites",
+        confidence=Confidence.MEDIUM,
+        constraints=[GeoConstraint(
+            kind=ConstraintKind.SITES,
+            sites=[(-28.073, 153.417), (-27.5, 153.0), (-33.9, 151.2)],
+            site_radius_km=2.0, floor=1e-4, confidence=Confidence.MEDIUM)])
+    post_after, g = fuse([country, sites], grid=grid)
+
+    assert (credible_region_km2(post_after, g)
+            < credible_region_km2(post_before, g) / 10)
+
+
+def test_candidates_are_named_by_site_not_cell(grid):
+    """A gazetteer answer must report the place, not the grid cell.
+
+    "Bond University (Robina, AU)" is the useful output; "the cell centred on
+    -28.25, 153.25" is not, and hides that a named match was even found.
+    """
+    from geoloc.geo.fusion import extract_candidates, fuse
+
+    ev = Evidence(
+        id="facility.university.AU", analyzer="facility", title="sites",
+        confidence=Confidence.MEDIUM,
+        raw={"sites": [{"name": "Bond University", "lat": -28.0730,
+                        "lon": 153.4165, "osm": "https://example.invalid/1"}]},
+        constraints=[GeoConstraint(
+            kind=ConstraintKind.SITES, sites=[(-28.0730, 153.4165)],
+            site_radius_km=2.0, floor=1e-5, confidence=Confidence.MEDIUM)])
+    post, g = fuse([ev], grid=grid)
+    cands = extract_candidates(post, g, n=3, evidence=[ev])
+    assert cands, "site constraint produced no candidate"
+    assert "Bond University" in cands[0].label, cands[0].label
+    # Exact site coordinates, not the cell centre.
+    assert abs(cands[0].lat - (-28.0730)) < 1e-6
+    assert abs(cands[0].lon - 153.4165) < 1e-6

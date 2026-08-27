@@ -94,6 +94,25 @@ def render_constraint(c: GeoConstraint, grid: WorldGrid,
         lik = lat_l * lon_l
         return np.log(np.maximum(lik, max(c.floor, np.exp(LOG_FLOOR))))
 
+    if c.kind is ConstraintKind.SITES:
+        sites = c.sites or []
+        if not sites:
+            return np.zeros((H, W))
+        # Disjunction: the photo was taken at ONE of these places, so take
+        # the best match rather than accumulating them.
+        best = np.full((H, W), -np.inf)
+        radius = max(c.site_radius_km, grid.step * 111.0 * 0.5)
+        la2 = np.radians(grid.lat2d)
+        for lat, lon in sites:
+            la1 = np.radians(lat)
+            dl = np.radians(grid.lon2d - lon)
+            a = (np.sin((la2 - la1) / 2) ** 2
+                 + np.cos(la1) * np.cos(la2) * np.sin(dl / 2) ** 2)
+            dist = 2 * 6371.0088 * np.arcsin(np.sqrt(np.clip(a, 0, 1)))
+            best = np.maximum(best, -0.5 * (dist / radius) ** 2)
+        lik = np.exp(best)
+        return np.log(np.maximum(lik, max(c.floor, np.exp(LOG_FLOOR))))
+
     if c.kind is ConstraintKind.HEATMAP:
         hm = heatmaps.get(c.heatmap_ref or "")
         if hm is None or hm.shape != (H, W):
@@ -150,26 +169,44 @@ def top_countries(post: np.ndarray, grid: WorldGrid, n: int = 8) -> list[tuple[s
     return [(grid.countries[i], float(sums[i])) for i in order if sums[i] > 0]
 
 
-def _point_anchors(evidence: list[Evidence]) -> list[tuple[float, float]]:
-    """Exact coordinates asserted by high-confidence point constraints."""
-    out = []
+def _point_anchors(evidence: list[Evidence]) -> list[dict]:
+    """Exact known coordinates worth reporting instead of a cell centre.
+
+    Two sources: high-confidence point constraints (a GPS tag, a geocoded
+    name), and the named sites behind a SITES constraint. The latter matters
+    most -- a gazetteer answer of "Bond University" is the useful output, and
+    "the cell centred on -28.25, 153.25" is not.
+    """
+    out: list[dict] = []
     for ev in evidence:
         for c in ev.constraints:
             if (c.kind is ConstraintKind.POINT and c.lat is not None
                     and c.lon is not None
                     and (c.confidence or ev.confidence) in
                     (Confidence.CERTAIN, Confidence.HIGH)):
-                out.append((float(c.lat), float(c.lon)))
+                out.append({"lat": float(c.lat), "lon": float(c.lon),
+                            "label": "", "source": ev.id})
+
+        # Named sites travel in the evidence payload rather than the
+        # constraint, which carries only coordinates for rendering.
+        for site in ev.raw.get("sites", []) or []:
+            try:
+                out.append({"lat": float(site["lat"]), "lon": float(site["lon"]),
+                            "label": str(site.get("name") or ""),
+                            "osm": site.get("osm", ""), "source": ev.id})
+            except (KeyError, TypeError, ValueError):
+                continue
     return out
 
 
-def _anchor_in_cell(anchors: list[tuple[float, float]], grid: WorldGrid,
-                    r: int, c: int) -> tuple[float, float] | None:
-    """Return the anchor falling inside grid cell (r, c), if any."""
-    for lat, lon in anchors:
-        if grid.cell_of(lat, lon) == (r, c):
-            return lat, lon
-    return None
+def _anchor_in_cell(anchors: list[dict], grid: WorldGrid,
+                    r: int, c: int) -> dict | None:
+    """The anchor falling inside grid cell (r, c), preferring a named one."""
+    hits = [a for a in anchors if grid.cell_of(a["lat"], a["lon"]) == (r, c)]
+    if not hits:
+        return None
+    named = [a for a in hits if a["label"]]
+    return (named or hits)[0]
 
 
 def extract_candidates(post: np.ndarray, grid: WorldGrid, *, n: int = 8,
@@ -208,22 +245,29 @@ def extract_candidates(post: np.ndarray, grid: WorldGrid, *, n: int = 8,
         lon = float(grid.lon2d[r, c])
 
         anchor = _anchor_in_cell(anchors, grid, r, c)
+        site_label = ""
+        site_osm = ""
         if anchor is not None:
-            lat, lon = anchor
+            lat, lon = anchor["lat"], anchor["lon"]
+            site_label = anchor.get("label", "")
+            site_osm = anchor.get("osm", "")
 
         near = idx.nearest(lat, lon, k=1)
         place = near[0] if near else {}
         cc = grid.country_idx[r, c]
         country = grid.countries[cc] if cc >= 0 else ""
 
+        place_label = f"{place.get('name', 'unknown')}, {country}".strip(", ")
         chosen.append(Candidate(
             rank=rank, lat=lat, lon=lon, score=score,
-            label=f"{place.get('name', 'unknown')}, {country}".strip(", "),
+            label=(f"{site_label} ({place_label})" if site_label else place_label),
             country=country,
             admin1=str(place.get("admin1", "")),
             nearest_place=str(place.get("name", "")),
             distance_to_place_km=place.get("distance_km"),
             supporting_evidence=ev_ids,
+            osm_matches=([{"name": site_label, "url": site_osm}]
+                         if site_label else []),
         ))
 
         # Zero out a neighbourhood so the next pick is a distinct hypothesis.

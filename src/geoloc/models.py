@@ -48,6 +48,7 @@ class ConstraintKind(StrEnum):
     LON_BAND = "lon_band"        # longitude range (timezone offsets)
     BBOX = "bbox"                # rectangular region
     HEATMAP = "heatmap"          # dense per-cell log-likelihood (ML estimator)
+    SITES = "sites"              # near ANY of a set of known locations
 
 
 class GeoConstraint(BaseModel):
@@ -73,6 +74,11 @@ class GeoConstraint(BaseModel):
     """Gaussian falloff applied outside a band/bbox edge, in degrees."""
     # HEATMAP -- flattened row-major log-likelihood matching the fusion grid
     heatmap_ref: str | None = None
+    # SITES -- candidate locations, combined disjunctively. Distinct from a
+    # list of POINT constraints, which fusion would multiply together and so
+    # drive everything to zero: "one of these 346 campuses" is an OR.
+    sites: list[tuple[float, float]] | None = None
+    site_radius_km: float = 3.0
 
     note: str = ""
 

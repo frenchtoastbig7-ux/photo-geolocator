@@ -20,6 +20,7 @@ from PIL import Image
 
 from .analyzers import clip_scene, faces, metadata, solar, text_ocr
 from .config import SETTINGS
+from .geo import facility as facility_mod
 from .geo import fusion, textgeo
 from .geo.grid import world_grid
 from .models import (
@@ -46,6 +47,10 @@ class AnalystInput:
     capture_datetime_utc: datetime | None = None
     capture_date: datetime | None = None
     notes: str = ""
+    facility_type: str | None = None
+    """A facility key from geo.facility.FACILITIES. Set when the analyst can
+    tell what kind of place this is; it unlocks the site gazetteer, which the
+    scene model is not reliable enough to trigger on its own."""
     country_hints: list[str] = field(default_factory=list)
     exclude_countries: list[str] = field(default_factory=list)
     bbox: tuple[float, float, float, float] | None = None  # lat_min, lat_max, lon_min, lon_max
@@ -139,6 +144,78 @@ def _exif_datetime(evidence: list[Evidence]) -> tuple[datetime | None, datetime 
         except (ValueError, IndexError):
             pass
     return None, naive.replace(tzinfo=UTC)
+
+
+def _ocr_texts(report: CaseReport) -> list[str]:
+    out: list[str] = []
+    for ev in report.evidence:
+        if ev.analyzer == "text" and ev.id == "ocr.text":
+            out.extend(str(b.get("text", "")) for b in ev.raw.get("blocks", []))
+    return out
+
+
+def _facility_evidence(report: CaseReport, analyst: AnalystInput) -> list[Evidence]:
+    """Narrow to known sites of an inferred or analyst-supplied facility type.
+
+    The facility may be asserted by the analyst, or inferred from words OCR
+    found. It is deliberately NOT inferred from the scene model: measured on
+    this build, CLIP ranks "shopping centre" above "university campus" on a
+    university campus, and gives a blank grey image a 37-point margin on
+    "industrial estate". Triggering a gazetteer query on that would narrow
+    confidently to the wrong kind of place.
+    """
+    if not SETTINGS.net_allowed():
+        return []
+
+    countries = [cc for cc, share in report.top_countries[:2] if share > 0.15]
+    if not countries:
+        return []
+
+    fac = None
+    why = ""
+    if analyst.facility_type:
+        fac = next((f for f in facility_mod.FACILITIES
+                    if f.key == analyst.facility_type), None)
+        why = "specified by the analyst"
+    if fac is None:
+        inferred = facility_mod.infer_facilities(_ocr_texts(report))
+        if inferred:
+            fac, matched = inferred[0]
+            why = f"inferred from text: {', '.join(matched)}"
+    if fac is None:
+        return []
+
+    out: list[Evidence] = []
+    for iso2 in countries:
+        try:
+            sites = facility_mod.fetch_sites(iso2, fac)
+        except Exception:
+            continue
+        if not sites:
+            continue
+        coords = [(s["lat"], s["lon"]) for s in sites]
+        named = [s for s in sites if s.get("name")]
+        out.append(Evidence(
+            id=f"facility.{fac.key}.{iso2}", analyzer="facility",
+            title=f"{len(sites)} candidate {fac.label} site(s) in {iso2}",
+            detail=(f"Facility type {why}. Every {fac.label} recorded in "
+                    f"OpenStreetMap for {iso2} was retrieved: {len(sites)} "
+                    f"site(s), {len(named)} named. The photograph was almost "
+                    "certainly taken at one of these, so the posterior is "
+                    "restricted to them. This narrows the search to a list "
+                    "you can check against imagery -- it does not pick one."),
+            confidence=Confidence.MEDIUM,
+            tags=["facility", "gazetteer", "network"],
+            raw={"facility": fac.key, "country": iso2,
+                 "site_count": len(sites), "sites": sites[:1200]},
+            constraints=[GeoConstraint(
+                kind=ConstraintKind.SITES, sites=coords,
+                site_radius_km=max(fac.typical_extent_km, 1.0),
+                floor=1e-4, confidence=Confidence.MEDIUM,
+                note=f"{len(sites)} {fac.label} sites in {iso2}",
+            )],
+        ))
+    return out
 
 
 def analyze_image(image_path: Path, *, analyst: AnalystInput | None = None,
@@ -264,6 +341,24 @@ def analyze_image(image_path: Path, *, analyst: AnalystInput | None = None,
             report.top_countries = fusion.top_countries(post, grid)
     elif auto_geocode:
         report.analyzers_skipped["geocode"] = "offline mode"
+
+    # ---- facility gazetteer ------------------------------------------
+    # "LIBRARY" cannot be geocoded, but it says the photo is a campus -- and
+    # the coordinates of every campus in a country are a matter of record.
+    # That turns "somewhere in Australia" into a list of real sites.
+    if auto_geocode:
+        try:
+            sites_ev = _facility_evidence(report, analyst)
+        except Exception as exc:
+            report.analyzers_skipped["facility"] = str(exc)
+            sites_ev = []
+        if sites_ev:
+            report.evidence.extend(sites_ev)
+            report.analyzers_run.append("facility")
+            tick("re-fusing with candidate sites")
+            post, grid = fusion.fuse(report.evidence, grid=grid, heatmaps=heatmaps,
+                                     use_habitation_prior=use_habitation_prior)
+            report.top_countries = fusion.top_countries(post, grid)
 
     report.candidates = fusion.extract_candidates(
         post, grid, n=n_candidates, evidence=report.evidence)
