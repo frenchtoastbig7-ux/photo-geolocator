@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Geolocation Workbench</title>
+<link rel="stylesheet" href="/static/leaflet.css">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <span class="dot"></span>
+    <h1>Geolocation Workbench</h1>
+    <span class="muted mono" id="devInfo"></span>
+  </div>
+  <div class="hdr-right">
+    <label class="toggle" title="Blocks every outbound request: OSM lookups and map tiles.">
+      <input type="checkbox" id="offlineToggle">
+      <span>Offline mode</span>
+    </label>
+    <button class="ghost" id="historyBtn">Cases</button>
+  </div>
+</header>
+
+<div id="netBanner" class="banner hidden"></div>
+
+<main>
+  <!-- ── left: input ─────────────────────────────────────────── -->
+  <section class="panel" id="leftPanel">
+    <div id="drop" class="drop">
+      <input type="file" id="file" accept="image/*" hidden>
+      <div id="dropInner">
+        <strong>Drop an image</strong>
+        <span class="muted">or click to choose</span>
+      </div>
+      <img id="preview" class="hidden" alt="">
+    </div>
+    <div id="fileMeta" class="muted mono small"></div>
+
+    <details open>
+      <summary>Analyst determinations</summary>
+      <p class="hint">Anything you establish yourself outweighs the models.
+        Leave blank what you cannot determine &mdash; a guess entered here
+        propagates as if it were fact.</p>
+
+      <label>Driving side</label>
+      <div class="seg" id="drivingSide">
+        <button data-v="" class="on">Unknown</button>
+        <button data-v="left">Left</button>
+        <button data-v="right">Right</button>
+      </div>
+
+      <label>Country shortlist <span class="muted">ISO2, comma separated</span></label>
+      <input id="countries" placeholder="HR, SI, IT">
+
+      <label>Rule out <span class="muted">ISO2, comma separated</span></label>
+      <input id="exclude" placeholder="US, CA">
+
+      <label>Analyst notes</label>
+      <textarea id="notes" rows="2" placeholder="Observations, provenance, tasking reference…"></textarea>
+    </details>
+
+    <details>
+      <summary>Solar geometry</summary>
+      <p class="hint">Shadow bearing is measured clockwise from <em>true</em>
+        north, along the shadow away from the object. Correct for magnetic
+        declination first. With a full UTC instant this constrains latitude
+        <em>and</em> longitude; with a date alone, latitude only.</p>
+
+      <label>Capture instant (UTC)</label>
+      <input id="captureUtc" placeholder="2024-06-21T14:30:00">
+      <label>…or capture date only</label>
+      <input id="captureDate" placeholder="2024-06-21">
+
+      <label>Shadow bearing (deg from true north)</label>
+      <input id="shadowAz" type="number" step="1" min="0" max="360" placeholder="135">
+
+      <div class="row">
+        <div><label>Object height</label><input id="objH" type="number" step="any" placeholder="1.8"></div>
+        <div><label>Shadow length</label><input id="shadowLen" type="number" step="any" placeholder="3.1"></div>
+      </div>
+      <div class="muted small" id="elevCalc"></div>
+    </details>
+
+    <details>
+      <summary>Analysis options</summary>
+      <label class="chk"><input type="checkbox" id="runScene" checked> Run scene model (StreetCLIP)</label>
+      <label class="chk"><input type="checkbox" id="habPrior" checked> Habitation prior
+        <span class="muted">— disable for wilderness imagery</span></label>
+    </details>
+
+    <button id="runBtn" class="primary" disabled>Analyse image</button>
+    <div id="status" class="status"></div>
+  </section>
+
+  <!-- ── centre: map ─────────────────────────────────────────── -->
+  <section class="mapwrap">
+    <div id="map"></div>
+    <div class="maplegend" id="legend">
+      <span class="lg-title">Posterior</span>
+      <div class="ramp"></div>
+      <div class="ramp-lbl"><span>low</span><span>high</span></div>
+    </div>
+  </section>
+
+  <!-- ── right: findings ─────────────────────────────────────── -->
+  <section class="panel" id="rightPanel">
+    <div id="empty" class="empty">
+      <p>No analysis yet.</p>
+      <p class="muted small">Results appear here: ranked candidates, the
+      evidence that produced them, and the confidence attached to each.</p>
+    </div>
+    <div id="results" class="hidden">
+      <div id="warnings"></div>
+
+      <h2>Candidates</h2>
+      <div id="entropy" class="muted small"></div>
+      <div id="candidates"></div>
+
+      <h2>Countries</h2>
+      <div id="countryBars"></div>
+
+      <h2>OSM refinement</h2>
+      <p class="hint">Sends only the text below to a third-party service.
+        The image never leaves this machine.</p>
+      <div class="row">
+        <input id="geoQ" placeholder="Place or street name from the image">
+        <button id="geoBtn" class="ghost">Geocode</button>
+      </div>
+      <div id="featurePicker"></div>
+      <button id="featBtn" class="ghost wide">Search features near top candidate</button>
+      <div id="osmResults"></div>
+
+      <h2>Evidence</h2>
+      <div id="evidence"></div>
+
+      <a id="reportLink" class="ghost wide hidden" target="_blank">Open full report</a>
+    </div>
+  </section>
+</main>
+
+<div id="modal" class="modal hidden"><div class="modal-inner">
+  <div class="modal-hd"><strong>Saved cases</strong><button id="modalClose" class="ghost">Close</button></div>
+  <div id="caseList"></div>
+</div></div>
+
+<script src="/static/leaflet.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
