@@ -248,6 +248,12 @@ def _vpr_evidence(image_path: Path, report: CaseReport,
             confidence=Confidence.LOW, tags=["tooling"])]
 
     out: list[Evidence] = []
+    # Corpora may overlap: two areas harvested around the same city both
+    # contain its station. Emitting a match from each would count one piece
+    # of evidence twice and inflate the posterior, so accepted matches are
+    # deduplicated by location and only the strongest is kept.
+    accepted: dict[tuple[int, int], tuple[float, Evidence]] = {}
+
     for name in areas:
         idx = vpr_index.load(name)
         if idx is None or not len(idx):
@@ -269,7 +275,11 @@ def _vpr_evidence(image_path: Path, report: CaseReport,
                 raw={"area": name, **result.as_dict()}))
             continue
 
-        out.append(Evidence(
+        key = (round(best.lat * 200), round(best.lon * 200))   # ~500 m cells
+        prior = accepted.get(key)
+        if prior is not None and prior[0] >= best.best_score:
+            continue
+        accepted[key] = (best.best_score, Evidence(
             id=f"vpr.match.{name}", analyzer="vpr",
             title=f"Visual match: {best.site_name or best.site_id}",
             detail=(result.reason + " Matched by image retrieval against "
@@ -288,6 +298,8 @@ def _vpr_evidence(image_path: Path, report: CaseReport,
                 kind=ConstraintKind.POINT, lat=best.lat, lon=best.lon,
                 radius_km=0.4, confidence=Confidence.HIGH,
                 note=f"VPR match: {best.site_name or best.site_id}")]))
+
+    out.extend(ev for _score, ev in accepted.values())
     return out
 
 

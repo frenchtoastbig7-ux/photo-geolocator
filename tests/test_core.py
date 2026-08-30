@@ -1114,3 +1114,20 @@ def test_category_traversal_descends_into_subcategories():
 
     sig = inspect.signature(corpus.category_files)
     assert sig.parameters["depth"].default >= 1
+
+
+def test_vpr_matches_are_deduplicated_across_corpora():
+    """Overlapping corpora must not count one match twice.
+
+    Two areas harvested around the same city both contain its station, so
+    each produced its own HIGH-confidence point constraint for the same
+    place. Fusion multiplies constraints, so the duplicate inflated the
+    posterior on the strength of a single piece of evidence.
+    """
+    import inspect
+
+    from geoloc import pipeline
+
+    src = inspect.getsource(pipeline._vpr_evidence)
+    assert "accepted" in src and "round(best.lat" in src, (
+        "accepted VPR matches must be deduplicated by location")
