@@ -55,6 +55,14 @@ def _load():
     home = torch_home()
     home.mkdir(parents=True, exist_ok=True)
     os.environ["TORCH_HOME"] = str(home)
+    # MegaLoc's hub entrypoint pulls its weights from HuggingFace without an
+    # explicit cache_dir, so the environment is the only way to keep them
+    # beside the scene model rather than in the user's default cache.
+    from ..modelmgr import hf_cache_dir
+
+    cache = hf_cache_dir()
+    cache.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("HF_HUB_CACHE", str(cache))
 
     if not SETTINGS.net_allowed(purpose="model_download") and not is_installed():
         raise VPRUnavailable(

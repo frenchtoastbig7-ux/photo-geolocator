@@ -44,9 +44,16 @@ LOG_PATH = SUPPORT / "workbench.log"
 # Must precede any geoloc import: config resolves these at import time.
 os.environ.setdefault("GEOLOC_CASE_DIR", str(SUPPORT / "cases"))
 os.environ.setdefault("GEOLOC_MODEL_CACHE", str(SUPPORT / "models"))
-# Keep HuggingFace's own caches inside the app's directory too, so
-# uninstalling means deleting one folder.
-os.environ.setdefault("HF_HOME", str(SUPPORT / "models" / "huggingface"))
+# Keep HuggingFace's caches inside the app's directory too, so uninstalling
+# means deleting one folder.
+#
+# HF_HUB_CACHE rather than HF_HOME, because the two imply different layouts:
+# HF_HOME=X puts models in X/hub/models--*, while an explicit cache_dir=X
+# puts them in X/models--*. The scene model passes cache_dir and the
+# place-recognition model goes through the environment, so setting HF_HOME
+# split them across two directories and the app re-downloaded 914 MB of
+# weights it already had.
+os.environ.setdefault("HF_HUB_CACHE", str(SUPPORT / "models" / "huggingface"))
 
 
 def _log(msg: str) -> None:

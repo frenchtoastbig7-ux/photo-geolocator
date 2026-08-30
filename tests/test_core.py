@@ -1131,3 +1131,34 @@ def test_vpr_matches_are_deduplicated_across_corpora():
     src = inspect.getsource(pipeline._vpr_evidence)
     assert "accepted" in src and "round(best.lat" in src, (
         "accepted VPR matches must be deduplicated by location")
+
+
+def test_app_uses_one_huggingface_cache_layout():
+    """HF_HOME and cache_dir imply different directory layouts.
+
+    HF_HOME=X resolves models to X/hub/models--*, while an explicit
+    cache_dir=X resolves them to X/models--*. The scene model passes
+    cache_dir and the place-recognition model goes through the environment,
+    so setting HF_HOME split them across two directories and the packaged app
+    re-downloaded 914 MB of weights that were already on disk.
+    """
+    import pathlib
+
+    desktop = pathlib.Path("src/geoloc/desktop.py").read_text()
+    assert "HF_HUB_CACHE" in desktop
+    assert 'setdefault("HF_HOME"' not in desktop, (
+        "HF_HOME reintroduces the split-cache bug; use HF_HUB_CACHE")
+
+
+def test_spec_names_the_lazily_imported_vpr_stack():
+    """PyInstaller cannot see imports made inside functions.
+
+    The place-recognition modules are imported lazily so a build without them
+    still runs, which means the spec has to name them or the frozen app
+    silently loses visual matching while still starting cleanly.
+    """
+    import pathlib
+
+    spec = pathlib.Path("packaging/geoloc-mac.spec").read_text()
+    for module in ("geoloc.vpr", "geoloc.geo.facility", "geoloc.geo.textgeo"):
+        assert module in spec, f"{module} missing from the PyInstaller spec"
