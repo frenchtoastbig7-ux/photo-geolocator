@@ -18,7 +18,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from .analyzers import clip_scene, faces, metadata, solar, text_ocr
+from . import metaverify
+from .analyzers import clip_scene, faces, metadata, shadows, solar, text_ocr
 from .config import SETTINGS
 from .geo import facility as facility_mod
 from .geo import fusion, textgeo
@@ -303,6 +304,97 @@ def _vpr_evidence(image_path: Path, report: CaseReport,
     return out
 
 
+def _solar_timing(image_path: Path, report: CaseReport,
+                  person_boxes: list[tuple[int, int, int, int]]
+                  ) -> tuple[dict | None, list[Evidence]]:
+    """Estimate when the photograph was taken, from the shadows in it.
+
+    Uses elevation rather than bearing. A shadow's direction in the frame is
+    meaningless without the camera's heading, which files almost never
+    record; the ratio between an upright subject and its shadow needs no
+    heading at all. The cost is that the sun reaches every height twice a
+    day, so two candidate times are reported unless something else resolves
+    which side of noon it was.
+    """
+    measurement = shadows.measure(image_path, person_boxes)
+    if measurement is None:
+        return None, []
+
+    out: list[Evidence] = []
+    payload: dict = {"measurement": measurement.as_dict()}
+
+    detail = (f"Sun elevation {measurement.elevation_deg:.0f}° above the "
+              f"horizon, from {measurement.source} "
+              f"(shadow:subject ratio {measurement.ratio:.2f}). "
+              "Elevation is measured rather than assumed: it needs no camera "
+              "heading, unlike a shadow bearing.")
+    if measurement.notes:
+        detail += " " + " ".join(measurement.notes)
+
+    # Location and date, if the case has established them.
+    lat = lon = None
+    if report.candidates:
+        lat, lon = report.candidates[0].lat, report.candidates[0].lon
+    when = None
+    for ev in report.evidence:
+        if ev.id == "meta.timestamp" and ev.raw.get("datetime_original"):
+            from contextlib import suppress
+            with suppress(Exception):
+                when = datetime.fromisoformat(
+                    str(ev.raw["datetime_original"]).replace("/", "-").strip())
+
+    if lat is not None and when is not None:
+        pair = solar.times_for_elevation(lat, lon, when, measurement.elevation_deg)
+        if pair is None:
+            peak = solar.max_elevation_on(lat, lon, when)
+            detail += (f" The sun never rises above {peak:.0f}° at this "
+                       f"location on the stated date, so the shadows and the "
+                       "timestamp are inconsistent -- one of them is wrong.")
+            payload["contradiction"] = True
+        else:
+            am, pm = pair
+            payload["candidate_times_utc"] = [am.isoformat(), pm.isoformat()]
+            detail += (f" On the stated date at this location the sun is at "
+                       f"that height twice: {am:%H:%M} and {pm:%H:%M} UTC.")
+    elif lat is not None:
+        # No date: bracket the year to give an honest window.
+        year = datetime.now(UTC).year
+        spans = []
+        for label, date in (("midsummer", datetime(year, 6, 21, tzinfo=UTC)),
+                            ("equinox", datetime(year, 3, 20, tzinfo=UTC)),
+                            ("midwinter", datetime(year, 12, 21, tzinfo=UTC))):
+            pair = solar.times_for_elevation(lat, lon, date,
+                                             measurement.elevation_deg)
+            if pair:
+                spans.append(f"{label} {pair[0]:%H:%M}/{pair[1]:%H:%M}")
+            else:
+                spans.append(f"{label}: sun never that high")
+        payload["seasonal_window"] = spans
+        detail += (" No capture date survived, so the clock time depends on "
+                   "the season. At this location: " + "; ".join(spans)
+                   + " (UTC).")
+        # A sun height near the local maximum is only reachable for part of
+        # the year, which dates the photograph without any metadata.
+        window = solar.date_window_for_elevation(
+            lat, lon, measurement.elevation_deg, year)
+        if window:
+            payload["date_window"] = [window[0].strftime("%d %b"),
+                                      window[1].strftime("%d %b")]
+            detail += (f" That elevation is only attainable at this latitude "
+                       f"between {window[0]:%d %B} and {window[1]:%d %B}, "
+                       "which dates the photograph to that part of the year.")
+
+    out.append(Evidence(
+        id="solar.elevation", analyzer="solar",
+        title=f"Sun elevation {measurement.elevation_deg:.0f}° from shadows",
+        detail=detail,
+        confidence={"medium": Confidence.MEDIUM,
+                    "low": Confidence.LOW}.get(measurement.confidence,
+                                               Confidence.LOW),
+        tags=["solar", "shadow", "time"], raw=payload))
+    return payload, out
+
+
 def analyze_image(image_path: Path, *, analyst: AnalystInput | None = None,
                   run_scene_model: bool = True, use_habitation_prior: bool = True,
                   auto_geocode: bool = True,
@@ -476,6 +568,37 @@ def analyze_image(image_path: Path, *, analyst: AnalystInput | None = None,
 
     for msg in fusion.detect_contradictions(report.evidence, grid, heatmaps):
         report.warnings.append(msg)
+
+    # ---- capture time from shadows, and metadata verification -----------
+    tick("measuring shadows")
+    try:
+        person_boxes = faces.detect_people_boxes(image_path)
+        solar_payload, solar_ev = _solar_timing(image_path, report, person_boxes)
+    except Exception as exc:
+        report.analyzers_skipped["solar_shadow"] = str(exc)
+        solar_payload, solar_ev = None, []
+    if solar_ev:
+        report.evidence.extend(solar_ev)
+        report.analyzers_run.append("solar")
+    report.solar_timing = solar_payload
+
+    tick("verifying metadata against content")
+    try:
+        report.metadata_verdict = metaverify.verify(
+            report.evidence, grid, heatmaps,
+            use_habitation_prior=use_habitation_prior).as_dict()
+    except Exception as exc:
+        report.analyzers_skipped["metaverify"] = str(exc)
+    report.metadata_fields = metadata.full_dump(image_path)
+
+    # A fabricated GPS tag outranks every other constraint by design, because
+    # a genuine one deserves to. That makes an unflagged conflict the single
+    # most dangerous output this tool can produce: the ranked answer sits on
+    # the tag, looking authoritative, with the contradicting evidence buried.
+    verdict = report.metadata_verdict or {}
+    if verdict.get("verdict") == "conflict":
+        report.warnings.insert(0, "METADATA CONFLICT. " + verdict["headline"]
+                               + " " + verdict.get("detail", ""))
 
     report.credible_area_km2 = fusion.credible_region_km2(post, grid)
     band, note = fusion.describe_precision(report.credible_area_km2)

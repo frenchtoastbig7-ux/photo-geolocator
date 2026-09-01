@@ -270,6 +270,10 @@ function render(data) {
   const area = state.case.credible_area_km2;
   const band = state.case.precision_band || '';
   const weak = band === 'country' || band === 'unconstrained';
+  const panels = renderMetaVerdict(state.case) + renderCaptureTime(state.case)
+                 + renderMetaFields(state.case);
+  const host = $('operatorPanels');
+  if (host) host.innerHTML = panels;
   $('entropy').innerHTML = area == null ? '' : `
     <div class="precision ${weak ? 'weak' : 'ok'}">
       <strong>Precision: ${esc(band.toUpperCase())}</strong>
@@ -484,6 +488,74 @@ function renderModelBox(m) {
         `<p><strong>${esc(e.message)}</strong></p>`);
     }
   });
+}
+
+/* ── operator panels: metadata, spoof check, capture time ─────── */
+const VERDICT_STYLE = {
+  consistent:   ['ok',   'Metadata consistent'],
+  conflict:     ['bad',  'METADATA CONFLICT'],
+  unverifiable: ['warn', 'Metadata unverifiable'],
+  no_metadata:  ['warn', 'No GPS metadata'],
+};
+
+function renderMetaVerdict(c) {
+  const v = c.metadata_verdict || {};
+  if (!v.verdict) return '';
+  const [cls, label] = VERDICT_STYLE[v.verdict] || ['warn', v.verdict];
+  const rows = [];
+  if (v.gps) rows.push(['Tagged position', `${v.gps[0].toFixed(5)}, ${v.gps[1].toFixed(5)}`]);
+  if (v.content_best) rows.push(['Image content suggests', `${v.content_best[0].toFixed(3)}, ${v.content_best[1].toFixed(3)}`]);
+  if (v.distance_km != null) rows.push(['Separation', `${v.distance_km.toLocaleString()} km`]);
+  if (v.gps_percentile != null) rows.push(['Content support for the tag', `${v.gps_percentile}th percentile`]);
+  return `
+    <section class="panel">
+      <h3>Metadata verification</h3>
+      <div class="verdict ${cls}"><strong>${esc(label)}</strong>
+        <div class="vsub">${esc(v.headline || '')}</div></div>
+      <p class="muted small">${esc(v.detail || '')}</p>
+      ${rows.length ? `<table class="kv">${rows.map(r =>
+        `<tr><th>${esc(r[0])}</th><td>${esc(String(r[1]))}</td></tr>`).join('')}</table>` : ''}
+      ${(v.indicators || []).length ? `<ul class="ind">${
+        v.indicators.map(i => `<li>${esc(i)}</li>`).join('')}</ul>` : ''}
+    </section>`;
+}
+
+function renderMetaFields(c) {
+  const f = c.metadata_fields || {};
+  const keys = Object.keys(f);
+  if (!keys.length) return `
+    <section class="panel"><h3>File metadata</h3>
+      <p class="muted small">No metadata fields present — the file has been
+      stripped or re-encoded.</p></section>`;
+  return `
+    <section class="panel">
+      <h3>File metadata <span class="muted small">(${keys.length} fields)</span></h3>
+      <details><summary>Show all fields</summary>
+        <table class="kv meta">${keys.sort().map(k =>
+          `<tr><th>${esc(k)}</th><td>${esc(String(f[k]))}</td></tr>`).join('')}</table>
+      </details>
+    </section>`;
+}
+
+function renderCaptureTime(c) {
+  const sm = c.summary || {};
+  const t = sm.time_of_day || {};
+  const st = c.solar_timing || {};
+  const m = st.measurement || {};
+  const conf = m.confidence ? ` <span class="pill ${m.confidence}">${m.confidence}</span>` : '';
+  return `
+    <section class="panel">
+      <h3>Capture time${conf}</h3>
+      <p class="small">${esc(t.text || 'Not determinable from this image.')}</p>
+      ${t.shadow_check ? `<p class="muted small"><strong>Shadow cross-check:</strong> ${esc(t.shadow_check)}</p>` : ''}
+      ${m.elevation_deg != null ? `<table class="kv">
+        <tr><th>Sun elevation</th><td>${m.elevation_deg}&deg; above horizon</td></tr>
+        <tr><th>Shadow : subject ratio</th><td>${m.ratio}</td></tr>
+        <tr><th>Measured from</th><td>${esc(m.source || '')}</td></tr>
+        ${st.date_window ? `<tr><th>Season implied</th><td>${esc(st.date_window[0])} &ndash; ${esc(st.date_window[1])}</td></tr>` : ''}
+      </table>` : ''}
+      ${(m.notes || []).length ? `<ul class="ind">${m.notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
+    </section>`;
 }
 
 /* ── case history ─────────────────────────────────────────────── */

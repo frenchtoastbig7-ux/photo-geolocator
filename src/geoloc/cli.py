@@ -118,6 +118,16 @@ def analyze(
                if sm.get('next_steps') else ""),
             title="Intelligence brief", expand=False))
 
+    mv = rep.metadata_verdict or {}
+    if mv.get("verdict") == "conflict":
+        console.print(Panel(
+            f"[bold red]{mv['headline']}[/]\n\n{mv.get('detail','')}\n\n"
+            f"[dim]Tagged: {mv['gps'][0]:.5f}, {mv['gps'][1]:.5f}   |   "
+            f"Image content: {mv['content_best'][0]:.3f}, "
+            f"{mv['content_best'][1]:.3f}   |   "
+            f"content support for the tag: {mv['gps_support']:.2%}[/]",
+            title="[bold red]METADATA CONFLICT[/]", border_style="red"))
+
     band_style = {
         "pinpoint": "bold green", "locality": "green", "regional": "yellow",
         "country": "bold red", "unconstrained": "bold red",

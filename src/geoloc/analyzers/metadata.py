@@ -240,3 +240,84 @@ def analyze(path: Path) -> list[Evidence]:
         ))
 
     return out
+
+def full_dump(path: Path) -> dict[str, Any]:
+    """Every metadata field the file carries, for the operator to inspect.
+
+    The selective evidence items above answer "what does this tell us about
+    location"; this answers "what is actually in the file". Operators need
+    both -- a lens model or an editing-software tag is often what exposes a
+    doctored image, and no analyzer can anticipate which field will matter.
+    """
+    out: dict[str, Any] = {}
+
+    # exiftool reads XMP, IPTC, MakerNotes and vendor blocks that neither
+    # Pillow nor exifread expose. Used when present, but never required.
+    dumped = _exiftool_dump(path)
+    if dumped:
+        for key, value in dumped.items():
+            if key.startswith(("SourceFile", "ExifTool")):
+                continue
+            out[key] = value
+        return out
+
+    try:
+        from PIL import ExifTags, Image
+
+        with Image.open(path) as im:
+            out["_Image.Format"] = im.format
+            out["_Image.Mode"] = im.mode
+            out["_Image.Size"] = f"{im.width}x{im.height}"
+            exif = im.getexif()
+            for tag_id, value in (exif or {}).items():
+                name = ExifTags.TAGS.get(tag_id, f"Tag{tag_id}")
+                out[name] = _stringify(value)
+            for ifd_name, ifd_id in (("GPS", 0x8825), ("Exif", 0x8769)):
+                try:
+                    ifd = exif.get_ifd(ifd_id)
+                except Exception:
+                    continue
+                table = ExifTags.GPSTAGS if ifd_name == "GPS" else ExifTags.TAGS
+                for tag_id, value in (ifd or {}).items():
+                    name = table.get(tag_id, f"Tag{tag_id}")
+                    out[f"{ifd_name}.{name}"] = _stringify(value)
+    except Exception:
+        pass
+    return out
+
+
+def _stringify(value: Any) -> Any:
+    if isinstance(value, bytes):
+        try:
+            return value.decode("utf-8", "replace")[:200]
+        except Exception:
+            return f"<{len(value)} bytes>"
+    text = str(value)
+    return text[:300] if len(text) > 300 else text
+
+
+def camera_heading(path: Path) -> float | None:
+    """Compass bearing the camera faced, if the file records one.
+
+    Rare -- most phones omit it and most re-encoders strip it -- but when
+    present it removes the single obstacle to dating a photograph from its
+    shadows: a shadow's bearing in the frame is only meaningful once the
+    frame's own orientation is known.
+    """
+    try:
+        from PIL import Image
+
+        with Image.open(path) as im:
+            gps = im.getexif().get_ifd(0x8825) or {}
+    except Exception:
+        return None
+    # 17 = GPSImgDirection, 16 = GPSImgDirectionRef ("T" true / "M" magnetic)
+    raw = gps.get(17)
+    if raw is None:
+        return None
+    try:
+        heading = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return heading % 360.0
+

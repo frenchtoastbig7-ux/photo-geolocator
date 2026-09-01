@@ -161,6 +161,12 @@ class CaseReport(BaseModel):
     """Area of the smallest region holding 90% of the posterior mass. The
     headline honesty figure: a ranked list drawn from five million square
     kilometres is not a set of leads."""
+    metadata_fields: dict[str, Any] = Field(default_factory=dict)
+    """Every metadata field in the file, for the operator to inspect."""
+    metadata_verdict: dict[str, Any] = Field(default_factory=dict)
+    """Whether the file's own GPS agrees with what the picture shows."""
+    solar_timing: dict[str, Any] | None = None
+    """Sun elevation measured from shadows, and the times it implies."""
     precision_band: str = ""
     """pinpoint | locality | regional | country | unconstrained"""
     precision_note: str = ""

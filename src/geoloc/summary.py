@@ -50,6 +50,60 @@ def estimate_time_of_day(report: CaseReport, *, shadow_azimuth: float | None,
     """
     out: dict[str, Any] = {"method": "none", "text": "Not determinable from this image."}
 
+    # Measured sun elevation is the fallback that needs no camera heading and
+    # no surviving metadata, so it is prepared first and used if nothing
+    # better exists.
+    measured = None
+    if report.solar_timing:
+        m = report.solar_timing.get("measurement") or {}
+        elev = m.get("elevation_deg")
+        if elev is not None:
+            offset_h = round(report.candidates[0].lon / 15.0) if report.candidates else 0
+            if report.solar_timing.get("contradiction"):
+                measured = {
+                    "method": "shadow_elevation",
+                    "elevation_deg": elev,
+                    "text": (f"Shadows put the sun {elev:.0f}° above the "
+                             "horizon, which is higher than it ever reaches "
+                             "at this location on the recorded date. The "
+                             "timestamp and the image disagree.")}
+            elif report.solar_timing.get("candidate_times_utc"):
+                am, pm = report.solar_timing["candidate_times_utc"]
+                am_t, pm_t = am[11:16], pm[11:16]
+                measured = {
+                    "method": "shadow_elevation",
+                    "elevation_deg": elev,
+                    "candidates_utc": [am_t, pm_t],
+                    "text": (f"Sun measured at {elev:.0f}° above the horizon "
+                             f"from shadows. At this location and date that "
+                             f"occurs twice: {am_t} or {pm_t} UTC "
+                             f"(about {(int(am_t[:2])+offset_h)%24:02d}:{am_t[3:]} "
+                             f"or {(int(pm_t[:2])+offset_h)%24:02d}:{pm_t[3:]} "
+                             "local). The sun passes each height once "
+                             "climbing and once descending, so morning and "
+                             "afternoon cannot be separated by elevation "
+                             "alone.")}
+            else:
+                window = report.solar_timing.get("seasonal_window") or []
+                measured = {
+                    "method": "shadow_elevation",
+                    "elevation_deg": elev,
+                    "text": (f"Sun measured at {elev:.0f}° above the horizon "
+                             "from shadows. No capture date survived, so the "
+                             "clock time depends on season"
+                             + (": " + "; ".join(window) + " UTC."
+                                if window else "."))}
+                dw = report.solar_timing.get("date_window")
+                if dw:
+                    measured["date_window"] = dw
+                    measured["text"] += (f" That height is only reachable at "
+                                         f"this latitude between {dw[0]} and "
+                                         f"{dw[1]}, which dates the image to "
+                                         "that part of the year.")
+            if m.get("notes"):
+                measured["text"] += " " + " ".join(m["notes"])
+            measured["confidence"] = m.get("confidence", "low")
+
     meta = _ev(report, "meta.timestamp")
     if meta:
         raw = meta.raw.get("datetime_original", "")
@@ -61,6 +115,8 @@ def estimate_time_of_day(report: CaseReport, *, shadow_azimuth: float | None,
                         + (f" (UTC{offset})" if offset else
                            " (no UTC offset recorded, so local clock time)")
                         + ". Editable, so corroborate against shadows if it matters.")}
+        if measured:
+            out["shadow_check"] = measured["text"]
         return out
 
     if shadow_azimuth is not None and report.candidates and capture_date is not None:
@@ -88,7 +144,7 @@ def estimate_time_of_day(report: CaseReport, *, shadow_azimuth: float | None,
                             f"sun {elevation:.0f}° above the horizon. Solved "
                             f"from the shadow bearing at candidate #1; if that "
                             f"candidate is wrong, so is this.")}
-    return out
+    return measured or out
 
 
 def describe_scene(report: CaseReport) -> str:
@@ -179,6 +235,41 @@ def build_summary(report: CaseReport, *, shadow_azimuth: float | None = None,
                   capture_date: datetime | None = None) -> dict[str, Any]:
     top = report.candidates[0] if report.candidates else None
     trustworthy = report.precision_band in {"pinpoint", "locality", "regional"}
+
+    # A disputed tag must not be reported as the answer. A genuine GPS tag
+    # outranks everything else by design, so a fabricated one lands at the
+    # top of the ranking looking authoritative; stating it plainly here is
+    # the difference between a warning an operator may scroll past and a
+    # headline they cannot.
+    mv = report.metadata_verdict or {}
+    if mv.get("verdict") == "conflict" and mv.get("content_best"):
+        tag_lat, tag_lon = mv["gps"]
+        best_lat, best_lon = mv["content_best"]
+        return {
+            "assessment": (
+                f"DISPUTED. The file is tagged {tag_lat:.5f}, {tag_lon:.5f}, "
+                f"but the image's own content points to {best_lat:.3f}, "
+                f"{best_lon:.3f} — {mv['distance_km']:,.0f} km away. Do not "
+                "report either as the location until the discrepancy is "
+                "resolved."),
+            "location": "DISPUTED — metadata and image content disagree",
+            "coordinates": (f"tagged {tag_lat:.5f}, {tag_lon:.5f}  |  "
+                            f"content {best_lat:.3f}, {best_lon:.3f}"),
+            "countries": [f"{cc} {share * 100:.0f}%"
+                          for cc, share in report.top_countries[:4]],
+            "metadata_conflict": mv,
+            "time_of_day": estimate_time_of_day(
+                report, shadow_azimuth=shadow_azimuth, capture_date=capture_date),
+            "people_present": max(report.faces.people_count, report.faces.count),
+            "faces_visible": report.faces.count,
+            "precision_band": report.precision_band,
+            "next_steps": [
+                "Resolve the metadata conflict first: everything downstream "
+                "of a fabricated tag is unreliable.",
+                "Work the image content independently — text, signage and "
+                "structures — and treat the tag as a claim to be tested.",
+            ],
+        }
 
     if top and trustworthy:
         location = top.label

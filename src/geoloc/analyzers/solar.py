@@ -23,7 +23,7 @@ declination and for any image rotation before entering a bearing.
 from __future__ import annotations
 
 import math
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import numpy as np
 
@@ -276,3 +276,80 @@ def solar_noon_utc(lat: float, lon: float, date: datetime) -> datetime | None:
             from datetime import timedelta
             best = (base + timedelta(minutes=i * 5), float(el[0]))
     return best[0] if best else None
+
+def times_for_elevation(lat: float, lon: float, date: datetime,
+                        elevation_deg: float, step_minutes: int = 2
+                        ) -> tuple[datetime, datetime] | None:
+    """The two instants on `date` when the sun sits at a given height.
+
+    Elevation is the one solar quantity recoverable from a photograph without
+    knowing which way the camera faced, which makes it the only route to a
+    capture time for an image whose metadata has been stripped. The cost is
+    an irreducible ambiguity: the sun passes every height twice, once
+    climbing and once descending, so this returns both and leaves the choice
+    to other evidence.
+
+    Returns None when the sun never reaches that height on that date at that
+    latitude -- itself a useful finding, since it means the stated date and
+    the observed shadows cannot both be true.
+    """
+    day = date.replace(hour=0, minute=0, second=0, microsecond=0,
+                       tzinfo=date.tzinfo or UTC)
+    lat_a, lon_a = np.array([lat]), np.array([lon])
+
+    samples: list[tuple[datetime, float]] = []
+    for minute in range(0, 24 * 60, step_minutes):
+        when = day + timedelta(minutes=minute)
+        elev, _az = solar_position(to_julian_day(when), lat_a, lon_a)
+        samples.append((when, float(elev[0])))
+
+    peak = max(s[1] for s in samples)
+    if peak < elevation_deg:
+        return None
+
+    noon_index = max(range(len(samples)), key=lambda i: samples[i][1])
+    morning = min(samples[:noon_index + 1],
+                  key=lambda s: abs(s[1] - elevation_deg), default=None)
+    afternoon = min(samples[noon_index:],
+                    key=lambda s: abs(s[1] - elevation_deg), default=None)
+    if morning is None or afternoon is None:
+        return None
+    return morning[0], afternoon[0]
+
+
+def max_elevation_on(lat: float, lon: float, date: datetime) -> float:
+    """Highest the sun gets at this place on this date."""
+    day = date.replace(hour=0, minute=0, second=0, microsecond=0,
+                       tzinfo=date.tzinfo or UTC)
+    lat_a, lon_a = np.array([lat]), np.array([lon])
+    best = -90.0
+    for minute in range(0, 24 * 60, 5):
+        elev, _ = solar_position(to_julian_day(day + timedelta(minutes=minute)),
+                                 lat_a, lon_a)
+        best = max(best, float(elev[0]))
+    return best
+
+
+def date_window_for_elevation(lat: float, lon: float, elevation_deg: float,
+                              year: int, step_days: int = 3
+                              ) -> tuple[datetime, datetime] | None:
+    """Dates on which the sun can reach a given height at a given latitude.
+
+    A measured sun elevation dates a photograph as well as timing it. The
+    sun's maximum height varies through the year by twice the axial tilt, so
+    an elevation near the local summer maximum is only attainable for part of
+    the year -- at 43°N, 47° is unreachable at the equinox and impossible in
+    winter, which places the photograph between roughly April and August
+    without any metadata at all.
+
+    Returns the first and last date the height is attainable, or None if it
+    is attainable all year (tropics) or never.
+    """
+    attainable = []
+    for day_of_year in range(1, 366, step_days):
+        date = datetime(year, 1, 1, tzinfo=UTC) + timedelta(days=day_of_year - 1)
+        if max_elevation_on(lat, lon, date) >= elevation_deg:
+            attainable.append(date)
+    if not attainable or len(attainable) >= (365 // step_days):
+        return None
+    return attainable[0], attainable[-1]

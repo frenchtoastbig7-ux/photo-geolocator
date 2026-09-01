@@ -106,8 +106,8 @@ def _merge_boxes(boxes: list[tuple[int, int, int, int]], iou_thresh: float = 0.3
     return kept
 
 
-def detect_people(path: Path) -> int:
-    """Count people present, whether or not their faces are visible.
+def detect_people_boxes(path: Path) -> list[tuple[int, int, int, int]]:
+    """Locate people present, whether or not their faces are visible.
 
     Face detection alone badly understates this. A station-platform photo
     with fifteen people walking away from the camera reports zero faces,
@@ -125,15 +125,30 @@ def detect_people(path: Path) -> int:
     if request_cls is None:
         return 0
     try:
+        from PIL import Image
+
+        with Image.open(path) as im:
+            img_w, img_h = im.size
         url = NSURL.fileURLWithPath_(str(path.resolve()))
         handler = Vision.VNImageRequestHandler.alloc().initWithURL_options_(url, {})
         request = request_cls.alloc().init()
         with contextlib.suppress(Exception):
             request.setUpperBodyOnly_(False)
         ok, _err = handler.performRequests_error_([request], None)
-        return len(request.results() or []) if ok else 0
+        if not ok:
+            return []
+        boxes = []
+        for obs in (request.results() or []):
+            bb = obs.boundingBox()
+            # Vision uses a bottom-left origin in normalised coordinates.
+            px = round(bb.origin.x * img_w)
+            pw = round(bb.size.width * img_w)
+            ph = round(bb.size.height * img_h)
+            py = round((1.0 - bb.origin.y - bb.size.height) * img_h)
+            boxes.append((px, py, pw, ph))
+        return boxes
     except Exception:
-        return 0
+        return []
 
 
 def detect(path: Path) -> FaceFinding:
@@ -157,7 +172,7 @@ def detect(path: Path) -> FaceFinding:
 
     merged = _merge_boxes(boxes)
     return FaceFinding(count=len(merged), boxes=merged, detector=detector,
-                       people_count=detect_people(path))
+                       people_count=len(detect_people_boxes(path)))
 
 
 def write_redacted(path: Path, finding: FaceFinding, dest: Path,

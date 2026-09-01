@@ -188,3 +188,20 @@ h2:first-child{margin-top:0}
 .brief ul,.brief ol{margin:.2rem 0 .2rem 1.1rem;font-size:.81rem;
   color:var(--muted);line-height:1.5}
 .brief li{margin-bottom:.25rem}
+
+/* --- operator panels -------------------------------------------------- */
+.panel{border-top:1px solid var(--line);margin-top:.9rem;padding-top:.7rem}
+.panel h3{font-size:.83rem;margin:0 0 .45rem;letter-spacing:.02em}
+.verdict{border-radius:7px;padding:.45rem .6rem;font-size:.82rem;
+  border-left:3px solid var(--muted);background:var(--bg)}
+.verdict.ok{border-left-color:var(--ok)}
+.verdict.warn{border-left-color:var(--warn);background:var(--warn-bg)}
+.verdict.bad{border-left-color:var(--crit);background:var(--crit-bg);color:var(--crit)}
+.verdict .vsub{margin-top:.15rem;font-weight:400;opacity:.92}
+table.kv{width:100%;border-collapse:collapse;font-size:.78rem;margin-top:.45rem}
+table.kv th{text-align:left;font-weight:500;color:var(--muted);padding:.16rem .5rem .16rem 0;
+  vertical-align:top;white-space:nowrap;width:44%}
+table.kv td{padding:.16rem 0;word-break:break-word}
+table.kv.meta{max-height:320px;display:block;overflow-y:auto}
+.panel details summary{cursor:pointer;font-size:.78rem;color:var(--muted);margin-top:.3rem}
+ul.ind{margin:.4rem 0 0 .9rem;padding:0;font-size:.77rem;color:var(--muted);line-height:1.5}

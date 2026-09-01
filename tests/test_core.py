@@ -1270,3 +1270,147 @@ def test_geocoded_points_anchor_the_reported_coordinate(grid):
     cands = extract_candidates(post, g, n=1, evidence=[ev])
     assert abs(cands[0].lat - 52.5322) < 1e-6
     assert abs(cands[0].lon - 13.3846) < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Operator outputs: metadata verification and capture time
+# ---------------------------------------------------------------------------
+
+def _scene_evidence(lat, lon):
+    return Evidence(
+        id="ocr.postal", analyzer="text", title="scene", confidence=Confidence.HIGH,
+        constraints=[GeoConstraint(kind=ConstraintKind.POINT, lat=lat, lon=lon,
+                                   radius_km=20.0, confidence=Confidence.HIGH)])
+
+
+def _gps_evidence(lat, lon):
+    return Evidence(
+        id="meta.gps", analyzer="metadata", title="gps",
+        confidence=Confidence.CERTAIN, raw={"lat": lat, "lon": lon},
+        constraints=[GeoConstraint(kind=ConstraintKind.POINT, lat=lat, lon=lon,
+                                   radius_km=0.1, confidence=Confidence.CERTAIN)])
+
+
+def test_fabricated_gps_is_detected(grid):
+    """A German street scene tagged with Tokyo coordinates must be flagged.
+
+    A genuine GPS tag outranks every other constraint by design, so a
+    fabricated one lands at the top of the ranking looking authoritative.
+    Verification therefore rebuilds the posterior with all metadata removed
+    and scores the tag against that independent belief.
+    """
+    from geoloc import metaverify
+
+    ev = [_scene_evidence(52.52, 13.40), _gps_evidence(35.68, 139.69)]
+    v = metaverify.verify(ev, grid, {})
+    assert v.verdict == "conflict", v.headline
+    assert v.distance_km > 8000
+    assert v.gps_support < 0.05
+
+
+def test_honest_gps_is_not_flagged(grid):
+    from geoloc import metaverify
+
+    ev = [_scene_evidence(52.52, 13.40), _gps_evidence(52.53, 13.38)]
+    v = metaverify.verify(ev, grid, {})
+    assert v.verdict == "consistent", v.headline
+
+
+def test_verification_uses_support_not_percentile(grid):
+    """Regression: a percentile flatters any point in a skewed posterior.
+
+    A posterior concentrated on one country is near-zero across almost every
+    cell on Earth, so Tokyo scored in the 93rd percentile of a German scene
+    and was reported consistent at 8,904 km.
+    """
+    from geoloc import metaverify
+
+    v = metaverify.verify([_scene_evidence(52.52, 13.40),
+                           _gps_evidence(35.68, 139.69)], grid, {})
+    assert v.gps_support is not None
+    assert not hasattr(v, "gps_percentile")
+
+
+def test_unverifiable_when_the_image_says_nothing(grid):
+    """Absence of conflict is not authenticity. With no scene evidence there
+    is nothing to corroborate a tag against, and saying so beats implying
+    agreement."""
+    from geoloc import metaverify
+
+    v = metaverify.verify([_gps_evidence(35.68, 139.69)], grid, {})
+    assert v.verdict == "unverifiable"
+
+
+def test_disputed_case_does_not_headline_the_tagged_location():
+    """The brief must not present a disputed tag as the answer."""
+    from geoloc.models import Candidate, CaseReport, ImageFacts
+    from geoloc.summary import build_summary
+
+    report = CaseReport(
+        case_id="t", created_utc=datetime.now(UTC),
+        image=ImageFacts(path="x", filename="x", sha256="0" * 64, bytes=1,
+                         width=10, height=10, format="JPEG", mode="RGB"),
+        precision_band="pinpoint",
+        candidates=[Candidate(rank=1, lat=35.68, lon=139.69, score=0.9,
+                              label="Tokyo, JP", country="JP")],
+        metadata_verdict={"verdict": "conflict", "gps": [35.68, 139.69],
+                          "content_best": [52.52, 13.40], "distance_km": 8904.0,
+                          "gps_support": 0.0, "headline": "h", "detail": "d"})
+    sm = build_summary(report)
+    assert "DISPUTED" in sm["assessment"]
+    assert "Tokyo" not in sm["location"]
+
+
+def test_sun_elevation_recovers_a_known_geometry(tmp_path):
+    """The shadow measurement must be validated against known geometry, not
+    assumed. Elevation is used rather than bearing because it needs no camera
+    heading -- the obstacle that made solar dating analyst-only until now."""
+    import math
+
+    import cv2
+
+    from geoloc.analyzers.shadows import measure
+
+    true_elev = 50.0
+    img = np.full((900, 1200, 3), (190, 195, 200), np.uint8)
+    boxes = []
+    for cx in (300, 800):
+        ph, top = 260, 430
+        foot_y = top + ph
+        shadow = ph / math.tan(math.radians(true_elev))
+        cv2.ellipse(img, (int(cx + shadow / 2), foot_y),
+                    (int(shadow / 2), 16), 0, 0, 360, (110, 112, 118), -1)
+        cv2.rectangle(img, (cx - 26, top), (cx + 26, foot_y), (60, 55, 70), -1)
+        boxes.append((cx - 26, top, 52, ph))
+    path = tmp_path / "sun.jpg"
+    cv2.imwrite(str(path), img)
+
+    m = measure(path, boxes)
+    assert m is not None, "no shadow measured from a clean synthetic scene"
+    assert abs(m.elevation_deg - true_elev) < 5.0, m.elevation_deg
+
+
+def test_elevation_to_time_round_trips():
+    """Elevation gives two candidate times, and both must be returned: the
+    sun passes every height once climbing and once descending."""
+    import numpy as np_
+
+    from geoloc.analyzers.solar import solar_position, times_for_elevation, to_julian_day
+
+    when = datetime(2024, 6, 21, 9, 30, tzinfo=UTC)
+    elev, _ = solar_position(to_julian_day(when), np_.array([43.3]), np_.array([5.38]))
+    pair = times_for_elevation(43.3, 5.38, when, float(elev[0]))
+    assert pair is not None
+    am, pm = pair
+    assert am < pm
+    assert min(abs((t - when).total_seconds()) for t in pair) < 300
+
+
+def test_elevation_impossible_on_a_date_is_reported():
+    """If the sun never reaches the measured height, the date and the shadows
+    cannot both be true -- which is itself a finding."""
+    from geoloc.analyzers.solar import times_for_elevation
+
+    # 80 degrees is unreachable at 52 N in midwinter.
+    assert times_for_elevation(52.5, 13.4, datetime(2024, 12, 21, tzinfo=UTC),
+                               80.0) is None
