@@ -271,3 +271,134 @@ AIRCRAFT_PREFIX_COUNTRY: dict[str, str] = {
     "ZS-": "ZA", "A6-": "AE", "A7-": "QA", "9V-": "SG", "9M-": "MY",
     "HS-": "TH", "PK-": "ID", "RP-": "PH", "4X-": "IL", "SU-": "EG",
 }
+
+
+# ---------------------------------------------------------------------------
+# Postal codes.
+#
+# The strongest text cue after an explicit place name, and the reason is
+# arithmetic: a postcode partitions a country into thousands of cells, where
+# a language or a driving side only partitions the world into dozens.
+#
+# Shape alone is often not diagnostic -- five bare digits fit Germany, France,
+# Spain, Italy, Finland and the United States alike -- so each pattern is
+# marked for whether its *form* identifies a country. Non-distinctive codes
+# are only resolved once other evidence has narrowed the country, which is
+# how a bare "75011" becomes Paris rather than a guess.
+# ---------------------------------------------------------------------------
+POSTAL_PATTERNS: dict[str, tuple[str, bool]] = {
+    # iso2: (regex, form_is_distinctive)
+    "GB": (r"\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b", True),
+    "CA": (r"\b[A-Z]\d[A-Z]\s*\d[A-Z]\d\b", True),
+    "NL": (r"\b\d{4}\s?[A-Z]{2}\b", True),
+    "PL": (r"\b\d{2}-\d{3}\b", True),
+    "PT": (r"\b\d{4}-\d{3}\b", True),
+    "JP": (r"\b\d{3}-\d{4}\b", True),
+    "BR": (r"\b\d{5}-\d{3}\b", True),
+    "IE": (r"\b[A-Z]\d{2}\s?[A-Z\d]{4}\b", True),
+    "SE": (r"\b\d{3}\s\d{2}\b", True),
+    "CZ": (r"\b\d{3}\s\d{2}\b", True),
+    "SK": (r"\b\d{3}\s\d{2}\b", True),
+    "GR": (r"\b\d{3}\s\d{2}\b", True),
+    "US": (r"\b\d{5}(?:-\d{4})?\b", False),
+    "DE": (r"\b\d{5}\b", False),
+    "FR": (r"\b\d{5}\b", False),
+    "ES": (r"\b\d{5}\b", False),
+    "IT": (r"\b\d{5}\b", False),
+    "FI": (r"\b\d{5}\b", False),
+    "TR": (r"\b\d{5}\b", False),
+    "MX": (r"\b\d{5}\b", False),
+    "MY": (r"\b\d{5}\b", False),
+    "TH": (r"\b\d{5}\b", False),
+    "AU": (r"\b\d{4}\b", False),
+    "CH": (r"\b\d{4}\b", False),
+    "AT": (r"\b\d{4}\b", False),
+    "BE": (r"\b\d{4}\b", False),
+    "DK": (r"\b\d{4}\b", False),
+    "NO": (r"\b\d{4}\b", False),
+    "HU": (r"\b\d{4}\b", False),
+    "NZ": (r"\b\d{4}\b", False),
+    "ZA": (r"\b\d{4}\b", False),
+    "AR": (r"\b\d{4}\b", False),
+    "IN": (r"\b\d{6}\b", False),
+    "RU": (r"\b\d{6}\b", False),
+    "CN": (r"\b\d{6}\b", False),
+    "SG": (r"\b\d{6}\b", False),
+}
+
+# ---------------------------------------------------------------------------
+# Road and route numbering. Written on signs, shields and kilometre markers,
+# and the prefix conventions are national.
+# ---------------------------------------------------------------------------
+ROAD_PATTERNS: dict[str, list[str]] = {
+    "DE": [r"\bA\s?\d{1,3}\b", r"\bB\s?\d{1,3}\b"],
+    "AT": [r"\bA\s?\d{1,2}\b", r"\bS\s?\d{1,2}\b"],
+    "FR": [r"\bA\s?\d{1,3}\b", r"\bN\s?\d{1,4}\b", r"\bD\s?\d{1,4}\b"],
+    "GB": [r"\bM\s?\d{1,2}\b", r"\bA\d{1,4}\b", r"\bB\d{3,4}\b"],
+    "IT": [r"\bSS\s?\d{1,3}\b", r"\bSP\s?\d{1,3}\b", r"\bA\s?\d{1,2}\b"],
+    "ES": [r"\bAP-\d{1,2}\b", r"\bN-\d{1,3}\b", r"\bA-\d{1,3}\b", r"\bCV-\d{2,4}\b"],
+    "PL": [r"\bDK\s?\d{1,3}\b", r"\bS\d{1,2}\b"],
+    "CZ": [r"\bD\d{1,2}\b", r"\bI/\d{1,2}\b"],
+    "NL": [r"\bA\d{1,2}\b", r"\bN\d{1,3}\b"],
+    "BE": [r"\bE\d{2,3}\b", r"\bN\d{1,3}\b"],
+    "CH": [r"\bA\d{1,2}\b"],
+    "PT": [r"\bA\d{1,2}\b", r"\bIC\d{1,2}\b", r"\bEN\d{1,3}\b"],
+    "SE": [r"\bE\d{1,2}\b", r"\bRv\s?\d{1,3}\b"],
+    "NO": [r"\bE\d{1,3}\b", r"\bRv\s?\d{1,3}\b"],
+    "US": [r"\bI-\d{1,3}\b", r"\bUS\s?\d{1,3}\b", r"\bSR\s?\d{1,3}\b"],
+    "AU": [r"\bM\d{1,2}\b", r"\bA\d{1,2}\b", r"\bB\d{1,3}\b"],
+    "BR": [r"\bBR-\d{3}\b", r"\bSP-\d{3}\b"],
+    "IN": [r"\bNH\s?\d{1,3}\b", r"\bSH\s?\d{1,3}\b"],
+    "JP": [r"\b国道\d{1,3}号\b"],
+    "TR": [r"\bO-\d{1,2}\b", r"\bD\s?\d{3}\b"],
+}
+
+# ---------------------------------------------------------------------------
+# German vehicle-registration city prefixes. Included because they are the
+# single most useful sub-country cue in European geolocation puzzles: the
+# prefix is the registration district, so a legible plate names a city
+# outright. Abbreviated to the codes most often encountered; the full list
+# runs to several hundred.
+# ---------------------------------------------------------------------------
+DE_PLATE_CITY: dict[str, tuple[str, float, float]] = {
+    "B": ("Berlin", 52.5200, 13.4050),
+    "M": ("München", 48.1351, 11.5820),
+    "HH": ("Hamburg", 53.5511, 9.9937),
+    "K": ("Köln", 50.9375, 6.9603),
+    "F": ("Frankfurt am Main", 50.1109, 8.6821),
+    "S": ("Stuttgart", 48.7758, 9.1829),
+    "D": ("Düsseldorf", 51.2277, 6.7735),
+    "H": ("Hannover", 52.3759, 9.7320),
+    "L": ("Leipzig", 51.3397, 12.3731),
+    "DD": ("Dresden", 51.0504, 13.7373),
+    "N": ("Nürnberg", 49.4521, 11.0767),
+    "E": ("Essen", 51.4556, 7.0116),
+    "DO": ("Dortmund", 51.5136, 7.4653),
+    "BN": ("Bonn", 50.7374, 7.0982),
+    "MZ": ("Mainz", 49.9929, 8.2473),
+    "KA": ("Karlsruhe", 49.0069, 8.4037),
+    "MA": ("Mannheim", 49.4875, 8.4660),
+    "HB": ("Bremen", 53.0793, 8.8017),
+    "KI": ("Kiel", 54.3233, 10.1228),
+    "HL": ("Lübeck", 53.8655, 10.6866),
+    "RO": ("Rosenheim", 47.8564, 12.1289),
+    "A": ("Augsburg", 48.3705, 10.8978),
+    "R": ("Regensburg", 49.0134, 12.1016),
+    "WÜ": ("Würzburg", 49.7913, 9.9534),
+    "FR": ("Freiburg", 47.9990, 7.8421),
+    "UL": ("Ulm", 48.4011, 9.9876),
+    "OS": ("Osnabrück", 52.2799, 8.0472),
+    "MS": ("Münster", 51.9607, 7.6261),
+    "AC": ("Aachen", 50.7753, 6.0839),
+    "TR": ("Trier", 49.7490, 6.6371),
+    "SB": ("Saarbrücken", 49.2402, 6.9969),
+    "EF": ("Erfurt", 50.9848, 11.0299),
+    "MD": ("Magdeburg", 52.1205, 11.6276),
+    "SN": ("Schwerin", 53.6355, 11.4012),
+    "P": ("Potsdam", 52.3906, 13.0645),
+    "C": ("Chemnitz", 50.8278, 12.9214),
+    "J": ("Jena", 50.9271, 11.5892),
+    "GÖ": ("Göttingen", 51.5413, 9.9158),
+    "KS": ("Kassel", 51.3127, 9.4797),
+    "BI": ("Bielefeld", 52.0302, 8.5325),
+}

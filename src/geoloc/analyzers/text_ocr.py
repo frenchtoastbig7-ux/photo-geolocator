@@ -19,7 +19,10 @@ from pathlib import Path
 from ..data.reference import (
     AIRCRAFT_PREFIX_COUNTRY,
     CCTLD_COUNTRY,
+    DE_PLATE_CITY,
     PHONE_PREFIX_COUNTRY,
+    POSTAL_PATTERNS,
+    ROAD_PATTERNS,
     SCRIPT_COUNTRIES,
     UIC_COUNTRY,
     UIC_TYPE_PREFIXES,
@@ -94,6 +97,43 @@ def parse_uic(raw: str) -> str | None:
 
     # Without the check digit, insist the type code is a real vehicle class.
     return country if digits[:2] in UIC_TYPE_PREFIXES else None
+
+
+# A plate is written "B-XY 1234" / "M AB 123": district prefix, then a
+# letter group, then digits. Anchored to avoid swallowing ordinary words.
+DE_PLATE_RE = re.compile(r"\b([A-ZÄÖÜ]{1,3})[\s-]?([A-Z]{1,2})[\s-]?(\d{1,4})\b")
+
+
+def postal_candidates(text: str) -> dict[str, list[str]]:
+    """Postcode-shaped tokens, grouped by the countries whose form they fit.
+
+    Shape is frequently ambiguous -- five bare digits fit six countries at
+    once -- so this reports every country a token could belong to and leaves
+    the choice to fusion. Only the distinctively-shaped formats (a British
+    outward code, a Dutch "1012 AB", a Polish "00-001") identify a country on
+    their own.
+    """
+    hits: dict[str, list[str]] = {}
+    for iso2, (pattern, _distinctive) in POSTAL_PATTERNS.items():
+        for m in re.finditer(pattern, text, re.IGNORECASE):
+            token = m.group(0).strip().upper()
+            hits.setdefault(iso2, [])
+            if token not in hits[iso2]:
+                hits[iso2].append(token)
+    return hits
+
+
+def road_candidates(text: str) -> dict[str, list[str]]:
+    """Road numbers matching national numbering conventions."""
+    hits: dict[str, list[str]] = {}
+    for iso2, patterns in ROAD_PATTERNS.items():
+        for pattern in patterns:
+            for m in re.finditer(pattern, text):
+                token = m.group(0).strip()
+                hits.setdefault(iso2, [])
+                if token not in hits[iso2]:
+                    hits[iso2].append(token)
+    return hits
 
 
 def classify_scripts(text: str) -> Counter:
@@ -337,7 +377,21 @@ def run_ocr(path: Path) -> tuple[list[dict], str]:
 
 
 def analyze(path: Path) -> list[Evidence]:
+    """Read the image and turn whatever text it holds into evidence."""
     blocks, engine = run_ocr(path)
+    return evidence_from_blocks(blocks, engine)
+
+
+def evidence_from_blocks(blocks: list[dict], engine: str = "apple-vision"
+                         ) -> list[Evidence]:
+    """Derive evidence from OCR output.
+
+    Split from `analyze` so the interpretation of text -- postcodes, road
+    numbers, plates, scripts, diacritics -- can be tested against literal
+    strings instead of requiring a rendered image and a working OCR engine.
+    Most of the defects in this module were in the interpretation, not the
+    reading.
+    """
     if engine == "none":
         return [Evidence(
             id="ocr.unavailable", analyzer="text",
@@ -346,7 +400,7 @@ def analyze(path: Path) -> list[Evidence]:
             confidence=Confidence.LOW, tags=["tooling"],
         )]
 
-    strong = [b for b in blocks if b["confidence"] >= 0.3]
+    strong = [b for b in blocks if b.get("confidence", 1.0) >= 0.3]
     full_text = "\n".join(b["text"] for b in strong)
     out: list[Evidence] = []
 
@@ -502,8 +556,98 @@ def analyze(path: Path) -> list[Evidence]:
             )],
         ))
 
+    # ---- German registration plates --------------------------------------
+    plate_hits: dict[str, tuple[str, float, float]] = {}
+    for m in DE_PLATE_RE.finditer(full_text.upper()):
+        city = DE_PLATE_CITY.get(m.group(1))
+        if city:
+            plate_hits[m.group(0)] = city
+    if plate_hits:
+        cities = {v[0]: (v[1], v[2]) for v in plate_hits.values()}
+        out.append(Evidence(
+            id="ocr.plate_de", analyzer="text",
+            title=f"German plate district -> {', '.join(sorted(cities))}",
+            detail="Read: " + "; ".join(f"{k} -> {v[0]}"
+                                        for k, v in plate_hits.items())
+                   + ". The prefix is the registration district, so it names "
+                     "where the vehicle is registered -- which is usually, "
+                     "but not always, where it is photographed.",
+            confidence=Confidence.MEDIUM, tags=["text", "vehicle", "plate"],
+            raw={"plates": {k: v[0] for k, v in plate_hits.items()}},
+            constraints=[GeoConstraint(
+                kind=ConstraintKind.SITES,
+                sites=[(lat, lon) for lat, lon in cities.values()],
+                site_radius_km=35.0,
+                # A per-cell floor is applied across ~259k grid cells, so
+                # anything much above 1e-4 lets the world outside the sites
+                # outweigh them by sheer count. At 0.05 a legible Berlin
+                # plate moved the posterior not at all: Germany did not even
+                # reach the top six countries.
+                floor=1e-4,
+                confidence=Confidence.MEDIUM,
+                note="German registration district")],
+        ))
+
+    # ---- postal codes ----------------------------------------------------
+    # Strip anything already claimed by a plate or a road number first: the
+    # "1234" in "B-XY 1234" is a registration, and letting it register as a
+    # four-digit postcode added twelve spurious countries to the shortlist.
+    postal_text = full_text
+    for claimed in (list(plate_hits) if plate_hits else []) + [
+            t for toks in road_candidates(full_text).values() for t in toks]:
+        postal_text = postal_text.replace(claimed, " ")
+    postal = postal_candidates(postal_text)
+    if postal:
+        distinctive = {c: toks for c, toks in postal.items()
+                       if POSTAL_PATTERNS[c][1]}
+        # A distinctively-shaped code names its country; an ambiguous one only
+        # says "one of these", so it must not out-vote real evidence.
+        chosen = distinctive or postal
+        confidence = Confidence.HIGH if distinctive else Confidence.LOW
+        sample = sorted({t for toks in chosen.values() for t in toks})[:4]
+        out.append(Evidence(
+            id="ocr.postal", analyzer="text",
+            title=f"Postcode-shaped text -> {', '.join(sorted(chosen))}",
+            detail=(f"Found {', '.join(repr(s) for s in sample)}. "
+                    + ("The format identifies the country on its own."
+                       if distinctive else
+                       "This shape is shared by several countries, so it "
+                       "narrows nothing by itself -- but once other evidence "
+                       "settles the country it can be resolved to a town.")),
+            confidence=confidence, tags=["text", "postal"],
+            raw={"by_country": chosen, "ambiguous": not distinctive},
+            constraints=[GeoConstraint(
+                kind=ConstraintKind.COUNTRIES,
+                country_scores=dict.fromkeys(chosen, 1.0),
+                floor=0.10 if distinctive else 0.55,
+                confidence=confidence,
+                note="postcode format")],
+        ))
+
+    # ---- road numbering --------------------------------------------------
+    roads = road_candidates(full_text)
+    if roads:
+        sample = {c: t[:2] for c, t in list(roads.items())[:5]}
+        out.append(Evidence(
+            id="ocr.road", analyzer="text",
+            title=f"Road numbering consistent with {', '.join(sorted(roads))}",
+            detail="Matched: " + "; ".join(f"{c}: {', '.join(t)}"
+                                           for c, t in sample.items())
+                   + ". Numbering conventions overlap heavily between "
+                     "countries, so this corroborates rather than decides.",
+            confidence=Confidence.LOW, tags=["text", "road"],
+            raw={"by_country": roads},
+            constraints=[GeoConstraint(
+                kind=ConstraintKind.COUNTRIES,
+                country_scores=dict.fromkeys(roads, 1.0),
+                floor=0.55, confidence=Confidence.LOW,
+                note="road numbering convention")],
+        ))
+
     # ---- diacritic fingerprint -----------------------------------------
-    special = {c for c in full_text if c in "ąćęłńóśźżğışçöüåäøæðþõñčšžřůěŧđ"}
+    # Lower-cased first: signage is overwhelmingly upper case, so a
+    # case-sensitive membership test missed "BÄCKEREI" entirely.
+    special = {c for c in full_text.lower() if c in "ąćęłńóśźżğışçöüåäøæðþõñčšžřůěŧđ"}
     if special:
         out.append(Evidence(
             id="ocr.diacritics", analyzer="text",

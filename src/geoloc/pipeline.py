@@ -420,6 +420,7 @@ def analyze_image(image_path: Path, *, analyst: AnalystInput | None = None,
         shortlist = [cc for cc, share in report.top_countries[:5] if share > 0.02]
         try:
             geo_ev = textgeo.geocode_evidence(report.evidence, shortlist or None)
+            geo_ev += textgeo.geocode_postcodes(report.evidence, shortlist or None)
         except Exception as exc:
             report.analyzers_skipped["geocode"] = str(exc)
             geo_ev = []

@@ -112,6 +112,12 @@ def geocode_evidence(evidence: list[Evidence], country_codes: list[str] | None =
     """Geocode promising OCR strings and return them as located evidence."""
     if not SETTINGS.net_allowed():
         return []
+    # An unrestricted search is worse than none: "BÄCKEREI SCHMIDT" with no
+    # country filter returned a bakery in Brazil, one in Utah and one in
+    # Novosibirsk, and the first of them became a location constraint. If the
+    # evidence has not settled on any country, the honest move is to skip.
+    if not country_codes:
+        return []
 
     queries = candidate_queries(evidence)[:max_queries]
     if not queries:
@@ -156,3 +162,82 @@ def geocode_evidence(evidence: list[Evidence], country_codes: list[str] | None =
             )],
         ))
     return out
+
+def geocode_postcodes(evidence: list[Evidence],
+                      country_codes: list[str] | None = None) -> list[Evidence]:
+    """Resolve a postcode-shaped token to a town, once the country is known.
+
+    This is the step that makes an ambiguous postcode worth anything. Five
+    bare digits fit Germany, France, Spain, Italy, Finland and the United
+    States, so the token alone is nearly useless -- but a postcode partitions
+    a country into thousands of cells, so pairing it with a country the rest
+    of the evidence already supports usually lands within a few kilometres.
+
+    Deliberately restricted to the leading countries rather than searched
+    worldwide: "75011" resolves somewhere in almost every country that uses
+    five digits, and picking whichever answered first would be arbitrary.
+    """
+    if not SETTINGS.net_allowed() or not country_codes:
+        return []
+
+    postal = next((e for e in evidence if e.id == "ocr.postal"), None)
+    if postal is None:
+        return []
+    by_country: dict[str, list[str]] = postal.raw.get("by_country", {})
+
+    out: list[Evidence] = []
+    for i, iso2 in enumerate(country_codes[:2]):
+        tokens = by_country.get(iso2) or []
+        if not tokens:
+            continue
+        token = tokens[0]
+        if i:
+            time.sleep(NOMINATIM_MIN_INTERVAL)
+        try:
+            results = overpass.search_place_name(
+                token, country_codes=[iso2], limit=5)
+        except Exception:
+            continue
+        if not results:
+            continue
+
+        best = max(results, key=lambda r: r.get("importance") or 0.0)
+        distinct = len({(round(r["lat"], 2), round(r["lon"], 2)) for r in results})
+        # A postcode should resolve to one place within a country. Several
+        # distinct hits means the token was probably not a postcode at all.
+        #
+        # Capped at MEDIUM when the code's *shape* did not identify the
+        # country, because then the country came from other evidence and this
+        # only refines it. Emitting HIGH there inverted the hierarchy: five
+        # digits resolved in the wrong country produced a confident point that
+        # overrode the plate and road numbering which had chosen it.
+        ambiguous = bool(postal.raw.get("ambiguous"))
+        if distinct != 1:
+            confidence = Confidence.MEDIUM if not ambiguous else Confidence.LOW
+        else:
+            confidence = Confidence.MEDIUM if ambiguous else Confidence.HIGH
+
+        out.append(Evidence(
+            id=f"geo.postal.{iso2}", analyzer="geocode",
+            title=f"Postcode {token} resolved in {iso2}",
+            detail=(f"{token} in {iso2} resolves to "
+                    f"{best.get('display_name', '')} "
+                    f"({best['lat']:.4f}, {best['lon']:.4f}). "
+                    f"{len(results)} result(s), {distinct} distinct location(s)."
+                    + (" A postcode narrows to a few kilometres, so this is "
+                       "the strongest lead available short of a GPS tag."
+                       if distinct == 1 else
+                       " Several distinct matches: the token may not be a "
+                       "postcode.")
+                    + " Only the code was sent; the image was not."),
+            confidence=confidence, tags=["text", "postal", "geocode", "network"],
+            raw={"postcode": token, "country": iso2, "results": results[:5]},
+            constraints=[GeoConstraint(
+                kind=ConstraintKind.POINT, lat=float(best["lat"]),
+                lon=float(best["lon"]),
+                radius_km=6.0 if distinct == 1 else 20.0,
+                confidence=confidence,
+                note=f"postcode {token} in {iso2}")],
+        ))
+    return out
+

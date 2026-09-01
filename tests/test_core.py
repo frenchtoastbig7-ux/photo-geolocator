@@ -1162,3 +1162,111 @@ def test_spec_names_the_lazily_imported_vpr_stack():
     spec = pathlib.Path("packaging/geoloc-mac.spec").read_text()
     for module in ("geoloc.vpr", "geoloc.geo.facility", "geoloc.geo.textgeo"):
         assert module in spec, f"{module} missing from the PyInstaller spec"
+
+
+# ---------------------------------------------------------------------------
+# Geolocation-puzzle cues: postcodes, road numbers, registration plates
+# ---------------------------------------------------------------------------
+
+def test_distinctive_postcodes_identify_a_country_alone():
+    from geoloc.analyzers.text_ocr import postal_candidates
+
+    assert postal_candidates("SW1A 1AA")["GB"] == ["SW1A 1AA"]
+    assert postal_candidates("1012 AB Amsterdam")["NL"] == ["1012 AB"]
+    assert postal_candidates("00-001 Warszawa")["PL"] == ["00-001"]
+
+
+def test_ambiguous_postcodes_report_every_candidate_country():
+    """Five bare digits fit six countries. Claiming one would be a guess."""
+    from geoloc.analyzers.text_ocr import postal_candidates
+
+    hits = postal_candidates("75011")
+    assert {"FR", "DE", "ES", "IT", "US"} <= set(hits)
+
+
+def test_site_constraint_floors_stay_low_enough_to_matter(grid):
+    """A per-cell floor is applied across every cell on the globe.
+
+    Regression: the German plate constraint used floor=0.05, so ~259k cells
+    of background outweighed the one cell containing Berlin by sheer count. A
+    legible Berlin plate moved the posterior so little that Germany did not
+    reach the top six countries on an unmistakably German street scene.
+    """
+    from geoloc.geo.fusion import fuse, top_countries
+
+    ev = Evidence(
+        id="ocr.plate_de", analyzer="text", title="plate",
+        confidence=Confidence.MEDIUM,
+        constraints=[GeoConstraint(
+            kind=ConstraintKind.SITES, sites=[(52.52, 13.405)],
+            site_radius_km=35.0, floor=1e-4,
+            confidence=Confidence.MEDIUM)])
+    post, g = fuse([ev], grid=grid)
+    assert top_countries(post, g)[0][0] == "DE"
+
+
+def test_diacritics_are_detected_in_upper_case_signage():
+    """Signage is overwhelmingly upper case; a case-sensitive membership test
+    missed "BÄCKEREI" and with it the whole German language signal."""
+    from geoloc.analyzers.text_ocr import evidence_from_blocks
+
+    ids = {e.id for e in evidence_from_blocks(
+        [{"text": "BÄCKEREI SCHMIDT", "confidence": 0.99,
+          "bbox": [0, 0, 1, 1], "script_pass": "Latin"}])}
+    assert "ocr.diacritics" in ids
+
+
+def test_plate_digits_are_not_read_as_postcodes():
+    """The "1234" in "B-XY 1234" is a registration, not a four-digit postcode.
+
+    Regression: it matched twelve countries' postcode patterns and dragged
+    them all into the country shortlist.
+    """
+    from geoloc.analyzers.text_ocr import evidence_from_blocks
+
+    ev = evidence_from_blocks([
+        {"text": "B-XY 1234", "confidence": 0.99, "bbox": [0, 0, 1, 1],
+         "script_pass": "Latin"}])
+    postal = next((e for e in ev if e.id == "ocr.postal"), None)
+    assert postal is None or "AR" not in postal.raw.get("by_country", {})
+
+
+def test_geocoding_never_runs_without_a_country_filter(monkeypatch):
+    """An unrestricted search is worse than none.
+
+    Regression: "BÄCKEREI SCHMIDT" with no country filter returned bakeries
+    in Brazil, Utah and Novosibirsk, and the first became a location
+    constraint on a Berlin street scene.
+    """
+    from geoloc.config import SETTINGS
+    from geoloc.geo import textgeo
+
+    monkeypatch.setattr(SETTINGS, "offline", False)
+    called = []
+    monkeypatch.setattr(textgeo.overpass, "search_place_name",
+                        lambda *a, **k: called.append(a) or [])
+    ev = Evidence(id="ocr.text", analyzer="text", title="t",
+                  raw={"blocks": [{"text": "BÄCKEREI SCHMIDT", "confidence": 0.9}]})
+    assert textgeo.geocode_evidence(ev and [ev], None) == []
+    assert not called, "geocoded with no country filter"
+
+
+def test_geocoded_points_anchor_the_reported_coordinate(grid):
+    """Confidence governs how much a point moves the posterior, not whether
+    its coordinates are real.
+
+    Regression: anchors required HIGH, so a postcode resolved to Berlin was
+    reported at a half-degree cell centre 25 km away, naming a different town.
+    """
+    from geoloc.geo.fusion import extract_candidates, fuse
+
+    ev = Evidence(
+        id="geo.postal.DE", analyzer="geocode", title="postcode",
+        confidence=Confidence.MEDIUM,
+        constraints=[GeoConstraint(kind=ConstraintKind.POINT, lat=52.5322,
+                                   lon=13.3846, radius_km=6.0,
+                                   confidence=Confidence.MEDIUM)])
+    post, g = fuse([ev], grid=grid)
+    cands = extract_candidates(post, g, n=1, evidence=[ev])
+    assert abs(cands[0].lat - 52.5322) < 1e-6
+    assert abs(cands[0].lon - 13.3846) < 1e-6

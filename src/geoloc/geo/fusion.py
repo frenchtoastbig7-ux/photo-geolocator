@@ -180,12 +180,18 @@ def _point_anchors(evidence: list[Evidence]) -> list[dict]:
     out: list[dict] = []
     for ev in evidence:
         for c in ev.constraints:
+            # Any geocoded point is worth reporting in place of a cell
+            # centre; the confidence governs how much it moves the posterior,
+            # not whether its coordinates are real. Requiring HIGH here meant
+            # a postcode resolved to Berlin was reported at the centre of a
+            # half-degree cell 25 km away, in a different town.
             if (c.kind is ConstraintKind.POINT and c.lat is not None
                     and c.lon is not None
                     and (c.confidence or ev.confidence) in
-                    (Confidence.CERTAIN, Confidence.HIGH)):
+                    (Confidence.CERTAIN, Confidence.HIGH, Confidence.MEDIUM)):
                 out.append({"lat": float(c.lat), "lon": float(c.lon),
-                            "label": "", "source": ev.id})
+                            "label": "", "source": ev.id,
+                            "weight": (c.confidence or ev.confidence).weight})
 
         # Named sites travel in the evidence payload rather than the
         # constraint, which carries only coordinates for rendering.
@@ -206,7 +212,9 @@ def _anchor_in_cell(anchors: list[dict], grid: WorldGrid,
     if not hits:
         return None
     named = [a for a in hits if a["label"]]
-    return (named or hits)[0]
+    # Prefer a named site; otherwise the most confident coordinate.
+    pool = named or hits
+    return max(pool, key=lambda a: a.get("weight", 0.0))
 
 
 def extract_candidates(post: np.ndarray, grid: WorldGrid, *, n: int = 8,
