@@ -20,6 +20,7 @@ from PIL import Image
 
 from . import metaverify
 from .analyzers import clip_scene, faces, metadata, shadows, solar, text_ocr
+from .analyzers import heading as heading_mod
 from .config import SETTINGS
 from .geo import facility as facility_mod
 from .geo import fusion, textgeo
@@ -383,6 +384,69 @@ def _solar_timing(image_path: Path, report: CaseReport,
             detail += (f" That elevation is only attainable at this latitude "
                        f"between {window[0]:%d %B} and {window[1]:%d %B}, "
                        "which dates the photograph to that part of the year.")
+
+    # ---- camera heading, and the ambiguity it resolves -------------------
+    # Elevation alone cannot separate morning from afternoon. Each candidate
+    # time implies a different sun azimuth and so a different camera heading;
+    # the streets on the map decide which one is real.
+    if lat is not None and measurement.endpoints:
+        import numpy as _np
+
+        cand_times = []
+        if payload.get("candidate_times_utc"):
+            cand_times = [(datetime.fromisoformat(t), lbl) for t, lbl in
+                          zip(payload["candidate_times_utc"],
+                              ("morning", "afternoon"), strict=False)]
+        elif when is not None:
+            cand_times = [(when, "recorded time")]
+
+        heading_candidates: list[tuple[float, str]] = []
+        try:
+            from PIL import Image
+
+            with Image.open(image_path) as im:
+                width_px = im.size[0]
+        except Exception:
+            width_px = 0
+
+        for moment, label in cand_times:
+            _elev, azim = solar.solar_position(
+                solar.to_julian_day(moment), _np.array([lat]), _np.array([lon]))
+            est = heading_mod.estimate(image_path, measurement.endpoints,
+                                       sun_azimuth_deg=float(azim[0]),
+                                       width_px=width_px)
+            if est and est.confidence != "rejected":
+                heading_candidates.append((est.heading_deg, label))
+                payload.setdefault("heading_notes", est.notes)
+            elif est:
+                payload["heading_rejected"] = est.detail
+
+        if heading_candidates:
+            payload["heading_candidates"] = [
+                {"heading_deg": round(h, 1), "time": lbl}
+                for h, lbl in heading_candidates]
+            resolved = None
+            if SETTINGS.net_allowed():
+                from contextlib import suppress
+
+                from .geo.overpass import feature_bearings
+                with suppress(Exception):
+                    resolved = heading_mod.match_against_features(
+                        heading_candidates, feature_bearings(lat, lon, 220))
+            if resolved:
+                head, label, feature, support = resolved
+                payload["heading_deg"] = round(head, 1)
+                payload["heading_resolved_by"] = feature
+                payload["resolved_time"] = label
+                detail += (f" Camera heading {head:.0f}°, matching the bearing "
+                           f"of {feature} ({support} mapped ways agree), which "
+                           f"also settles the {label} solution.")
+            else:
+                opts = ", ".join(f"{h:.0f}° ({lbl})"
+                                 for h, lbl in heading_candidates)
+                detail += (f" Camera heading is {opts} depending on which side "
+                           "of noon; no mapped street matched closely enough "
+                           "to choose between them.")
 
     out.append(Evidence(
         id="solar.elevation", analyzer="solar",

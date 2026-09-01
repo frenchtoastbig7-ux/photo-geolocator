@@ -59,13 +59,17 @@ class ShadowMeasurement:
     confidence: str
     source: str
     notes: list[str] = field(default_factory=list)
+    endpoints: list[tuple[float, float, float, float]] = field(default_factory=list)
+    """(foot_u, foot_v, tip_u, tip_v) per measured shadow. Kept because the
+    camera heading is recovered by back-projecting these onto the ground
+    plane, which needs the actual image positions, not just a bearing."""
 
     def as_dict(self) -> dict[str, Any]:
         return {"elevation_deg": round(self.elevation_deg, 1),
                 "ratio": round(self.ratio, 2),
                 "image_bearing_deg": round(self.image_bearing_deg, 1),
                 "confidence": self.confidence, "source": self.source,
-                "notes": self.notes}
+                "notes": self.notes, "endpoints": self.endpoints}
 
 
 def _shadow_mask(bgr: np.ndarray) -> np.ndarray:
@@ -99,7 +103,7 @@ def _shadow_mask(bgr: np.ndarray) -> np.ndarray:
 
 
 def _measure_from_person(mask: np.ndarray, box: tuple[int, int, int, int],
-                         ) -> tuple[float, float] | None:
+                         ) -> tuple[float, float, tuple[float, float, float, float]] | None:
     """Shadow length and image bearing for one detected person.
 
     Returns (length_px, bearing_deg) or None. The shadow is taken to be the
@@ -156,7 +160,9 @@ def _measure_from_person(mask: np.ndarray, box: tuple[int, int, int, int],
     # Clockwise from image-up, so it reads like a bearing once a heading is
     # supplied.
     bearing = (math.degrees(math.atan2(dx, -dy))) % 360.0
-    return length, bearing
+    tip_uv = (float(x0 + pts[far, 1]), float(y0 + pts[far, 0]))
+    return length, bearing, (float(foot[0]), float(foot[1]),
+                             tip_uv[0], tip_uv[1])
 
 
 def measure(path: Path, person_boxes: list[tuple[int, int, int, int]] | None = None,
@@ -170,14 +176,16 @@ def measure(path: Path, person_boxes: list[tuple[int, int, int, int]] | None = N
 
     mask = _shadow_mask(bgr)
     samples: list[tuple[float, float, float]] = []      # ratio, bearing, height
+    endpoints: list[tuple[float, float, float, float]] = []
     for box in person_boxes:
         got = _measure_from_person(mask, box)
         if got is None:
             continue
-        length, bearing = got
+        length, bearing, ends = got
         ratio = length / float(box[3])
         if MIN_RATIO <= ratio <= MAX_RATIO:
             samples.append((ratio, bearing, float(box[3])))
+            endpoints.append(ends)
 
     if not samples:
         return None
@@ -217,4 +225,4 @@ def measure(path: Path, person_boxes: list[tuple[int, int, int, int]] | None = N
     return ShadowMeasurement(
         elevation_deg=elevation, ratio=ratio, image_bearing_deg=bearing,
         confidence=confidence, source=f"{len(samples)} human shadow(s)",
-        notes=notes)
+        notes=notes, endpoints=endpoints)

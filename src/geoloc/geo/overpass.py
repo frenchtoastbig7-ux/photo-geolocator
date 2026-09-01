@@ -13,6 +13,7 @@ Every call is a no-op that raises `OfflineError` when offline mode is on.
 """
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import httpx
@@ -171,3 +172,62 @@ def bbox_around(lat: float, lon: float, radius_km: float
     dlat = radius_km / 111.0
     dlon = radius_km / max(111.0 * math.cos(math.radians(lat)), 1.0)
     return (lat - dlat, lon - dlon, lat + dlat, lon + dlon)
+
+
+def feature_bearings(lat: float, lon: float, radius_m: int = 220
+                     ) -> list[tuple[float, str]]:
+    """Compass bearings of mapped linear features around a point.
+
+    Streets, railway lines and building edges have bearings recorded in
+    OpenStreetMap. A photograph taken among them usually looks along one, so
+    these are what a camera heading derived from the sun can be checked
+    against -- and, where the sun leaves a morning/afternoon ambiguity, what
+    resolves it.
+
+    Returned modulo 180 degrees, because a way's direction of travel is
+    arbitrary: a street running north-south is the same street either way.
+    """
+    if not SETTINGS.net_allowed():
+        raise OfflineError("Feature-bearing lookup blocked: offline mode is on.")
+
+    highway_re = ("^(primary|secondary|tertiary|residential|unclassified"
+                  "|pedestrian|service|footway|living_street)$")
+    query = (
+        "[out:json][timeout:45];\n"
+        f'way(around:{radius_m},{lat},{lon})["highway"~"{highway_re}"];\n'
+        "out geom;"
+    )
+    data = None
+    for endpoint in _overpass_endpoints():
+        try:
+            with httpx.Client(timeout=90,
+                              headers={"User-Agent": SETTINGS.user_agent}) as c:
+                resp = c.post(endpoint, data={"data": query})
+            if resp.status_code in (429, 502, 503, 504):
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            break
+        except (httpx.HTTPError, ValueError):
+            continue
+    if data is None:
+        return []
+
+    out: list[tuple[float, str]] = []
+    for el in data.get("elements", []):
+        geom = el.get("geometry") or []
+        if len(geom) < 2:
+            continue
+        name = (el.get("tags", {}) or {}).get("name", el.get("id", ""))
+        # Longest straight run in the way, as the representative bearing.
+        best_len, best_bearing = 0.0, None
+        for a, b in zip(geom, geom[1:], strict=False):
+            dlat = b["lat"] - a["lat"]
+            dlon = (b["lon"] - a["lon"]) * math.cos(math.radians(a["lat"]))
+            length = math.hypot(dlat, dlon)
+            if length > best_len:
+                best_len = length
+                best_bearing = math.degrees(math.atan2(dlon, dlat)) % 180.0
+        if best_bearing is not None:
+            out.append((best_bearing, str(name)))
+    return out

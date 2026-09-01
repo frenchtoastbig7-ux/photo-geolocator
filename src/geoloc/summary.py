@@ -93,6 +93,24 @@ def estimate_time_of_day(report: CaseReport, *, shadow_azimuth: float | None,
                              "clock time depends on season"
                              + (": " + "; ".join(window) + " UTC."
                                 if window else "."))}
+                hd = report.solar_timing.get("heading_deg")
+                if hd is not None:
+                    compass = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S",
+                               "SSW","SW","WSW","W","WNW","NW","NNW"][
+                        int((hd + 11.25) % 360 // 22.5)]
+                    measured["camera_heading_deg"] = hd
+                    measured["text"] += (
+                        f" Camera faced {hd:.0f}° ({compass}), from the "
+                        "shadow geometry cross-checked against "
+                        f"{report.solar_timing.get('heading_resolved_by','the street layout')}"
+                        f"; that also resolves the {report.solar_timing.get('resolved_time','')} "
+                        "solution.")
+                elif report.solar_timing.get("heading_candidates"):
+                    opts = ", ".join(
+                        f"{c['heading_deg']:.0f}\u00b0 ({c['time']})"
+                        for c in report.solar_timing["heading_candidates"])
+                    measured["text"] += (f" Camera heading is {opts} depending "
+                                         "on which side of noon.")
                 dw = report.solar_timing.get("date_window")
                 if dw:
                     measured["date_window"] = dw

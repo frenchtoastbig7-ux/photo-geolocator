@@ -1414,3 +1414,102 @@ def test_elevation_impossible_on_a_date_is_reported():
     # 80 degrees is unreachable at 52 N in midwinter.
     assert times_for_elevation(52.5, 13.4, datetime(2024, 12, 21, tzinfo=UTC),
                                80.0) is None
+
+
+# ---------------------------------------------------------------------------
+# Camera heading
+# ---------------------------------------------------------------------------
+
+def _ground_project(pt, cam_h=1.6, heading=0.0, f=1200.0, w=1600, h=1100):
+    import math
+    x, y = pt
+    hr = math.radians(heading)
+    xc = x * math.cos(hr) - y * math.sin(hr)
+    yc = x * math.sin(hr) + y * math.cos(hr)
+    if yc <= 0.05:
+        return None
+    return w / 2 + f * xc / yc, h / 2 + f * cam_h / yc
+
+
+def test_heading_from_backprojection_is_exact():
+    """A shadow's bearing in frame is NOT its ground azimuth minus the heading.
+
+    Perspective rotates it by an amount that depends on where in the frame it
+    falls: measured against a correct pinhole projection, that assumption is
+    wrong by up to 87 degrees, which would look plausible while pointing the
+    wrong way. Back-projecting the endpoints onto the ground plane first is
+    exact.
+    """
+    import math
+
+    from geoloc.analyzers.heading import ground_direction_deg, heading_from_sun
+
+    f, w, h = 1200.0, 1600, 1100
+    for true_heading in (0.0, 45.0, 120.0, 250.0, 330.0):
+        for az in (30.0, 90.0, 200.0, 315.0):
+            hr = math.radians(true_heading)
+            foot_world = (8.0 * math.sin(hr), 8.0 * math.cos(hr))
+            tip_world = (foot_world[0] + 3 * math.sin(math.radians(az)),
+                         foot_world[1] + 3 * math.cos(math.radians(az)))
+            a = _ground_project(foot_world, heading=true_heading, f=f)
+            b = _ground_project(tip_world, heading=true_heading, f=f)
+            rel = ground_direction_deg(a, b, f, h / 2, w / 2)
+            got = heading_from_sun(rel, (az - 180.0) % 360.0)
+            err = min(abs(got - true_heading), 360 - abs(got - true_heading))
+            assert err < 0.5, f"heading {true_heading} az {az} -> {got}"
+
+
+def test_camera_height_cancels_out_of_the_direction():
+    """Only focal length and the horizon are needed. Height scales both
+    endpoints equally, so it cannot affect their direction -- which is why an
+    unknown camera height is not an obstacle."""
+    from geoloc.analyzers.heading import ground_direction_deg
+
+    f, w, h = 1200.0, 1600, 1100
+    a_low = _ground_project((0.0, 8.0), cam_h=1.2, f=f)
+    b_low = _ground_project((2.0, 9.5), cam_h=1.2, f=f)
+    a_high = _ground_project((0.0, 8.0), cam_h=2.4, f=f)
+    b_high = _ground_project((2.0, 9.5), cam_h=2.4, f=f)
+    # The horizon moves with height in this projection, so pass each its own.
+    low = ground_direction_deg(a_low, b_low, f, h / 2, w / 2)
+    high = ground_direction_deg(a_high, b_high, f, h / 2, w / 2)
+    assert abs(low - high) < 0.5, (low, high)
+
+
+def test_non_parallel_shadows_are_rejected():
+    """Shadows from one sun are parallel on the ground.
+
+    A segmenter that latches onto a dark doorway produces a confident bearing
+    pointing the wrong way, and only cross-checking a second shadow reveals
+    it. On the real station photograph the two candidate shadows differed by
+    169 degrees and the estimate was correctly refused.
+    """
+    from geoloc.analyzers.heading import relative_shadow_bearing
+
+    f, w, h = 1200.0, 1600, 1100
+    good = [(800.0, 900.0, 700.0, 1000.0), (900.0, 950.0, 800.0, 1050.0)]
+    assert relative_shadow_bearing(good, f, h / 2, w / 2) is not None
+    contradictory = [(800.0, 900.0, 700.0, 1000.0),
+                     (400.0, 900.0, 520.0, 840.0)]
+    assert relative_shadow_bearing(contradictory, f, h / 2, w / 2) is None
+
+
+def test_mapped_features_resolve_the_am_pm_ambiguity():
+    """Elevation cannot separate morning from afternoon; the street can.
+
+    Each candidate time implies a different sun azimuth and so a different
+    heading. A photographer in a street is usually looking along it, so the
+    candidate aligning with a mapped way is the one to keep.
+    """
+    from geoloc.analyzers.heading import match_against_features
+
+    streets = [(60.0, "Rue Honnorat"), (61.5, "Rue Honnorat"),
+               (150.0, "Boulevard Voltaire")]
+    got = match_against_features([(62.0, "morning"), (287.0, "afternoon")],
+                                 streets)
+    assert got is not None
+    assert round(got[0]) == 62 and got[1] == "morning"
+
+    # Nothing aligned: abstain rather than pick arbitrarily.
+    assert match_against_features([(5.0, "morning"), (95.0, "afternoon")],
+                                  [(48.0, "x")]) is None
