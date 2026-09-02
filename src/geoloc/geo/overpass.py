@@ -13,6 +13,7 @@ Every call is a no-op that raises `OfflineError` when offline mode is on.
 """
 from __future__ import annotations
 
+import itertools
 import math
 from typing import Any
 
@@ -221,7 +222,7 @@ def feature_bearings(lat: float, lon: float, radius_m: int = 220
         name = (el.get("tags", {}) or {}).get("name", el.get("id", ""))
         # Longest straight run in the way, as the representative bearing.
         best_len, best_bearing = 0.0, None
-        for a, b in zip(geom, geom[1:], strict=False):
+        for a, b in itertools.pairwise(geom):
             dlat = b["lat"] - a["lat"]
             dlon = (b["lon"] - a["lon"]) * math.cos(math.radians(a["lat"]))
             length = math.hypot(dlat, dlon)
