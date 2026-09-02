@@ -167,8 +167,29 @@ def _smoke_test() -> int:
 
     device = settings.get("device", "?")
     torch_ok = bool(model.get("torch_available"))
+
+    # Import the analyzers that are reached only from inside functions.
+    # PyInstaller cannot see those, and a bundle missing one starts perfectly
+    # and simply lacks the feature -- which is how the place-recognition
+    # stack shipped absent once already.
+    missing: list[str] = []
+    for module in ("geoloc.metaverify", "geoloc.analyzers.shadows",
+                   "geoloc.analyzers.heading", "geoloc.analyzers.solar",
+                   "geoloc.vpr.model", "geoloc.vpr.index", "geoloc.vpr.match",
+                   "geoloc.geo.facility", "geoloc.geo.textgeo"):
+        try:
+            __import__(module)
+        except Exception as exc:
+            missing.append(f"{module} ({type(exc).__name__})")
     print(f"SMOKE device={device} torch={torch_ok} "
-          f"scene_model_installed={bool(model.get('installed'))}", flush=True)
+          f"scene_model_installed={bool(model.get('installed'))} "
+          f"analyzers={'all' if not missing else 'MISSING'}", flush=True)
+    if missing:
+        _log("smoke test FAILED: analyzers absent from the bundle: "
+             + ", ".join(missing))
+        print("SMOKE FAIL: these analyzers are not in the bundle — add them to "
+              "the spec's hiddenimports: " + ", ".join(missing), flush=True)
+        return 1
     print(f"{APP_NAME} ready at {URL}", flush=True)
 
     if getattr(sys, "frozen", False) and not torch_ok:

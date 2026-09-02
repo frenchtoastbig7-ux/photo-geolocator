@@ -49,6 +49,8 @@ jobs:
           # the spec can break `import torch` while the server still answers.
           grep -q "torch=True" smoke.log \
             || { echo "PyTorch is not importable inside the bundle"; exit 1; }
+          grep -q "analyzers=all" smoke.log \
+            || { echo "an analyzer is missing from the bundle"; exit 1; }
           grep -q "SMOKE FAIL" smoke.log && { echo "smoke test reported failure"; exit 1; }
           echo "smoke test passed"
 

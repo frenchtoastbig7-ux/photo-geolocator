@@ -46,7 +46,9 @@ hiddenimports += ["geoloc.server", "geoloc.pipeline", "geoloc.modelmgr",
 # without it still runs, which also means PyInstaller's static analysis never
 # sees it. Named explicitly or the frozen app silently loses visual matching.
 hiddenimports += collect_submodules("geoloc.vpr")
-hiddenimports += ["geoloc.geo.facility", "geoloc.geo.textgeo",
+hiddenimports += ["geoloc.metaverify", "geoloc.analyzers.shadows",
+                  "geoloc.analyzers.heading", "geoloc.analyzers.solar",
+                  "geoloc.geo.facility", "geoloc.geo.textgeo",
                   "geoloc.vpr.model", "geoloc.vpr.corpus",
                   "geoloc.vpr.index", "geoloc.vpr.match",
                   "geoloc.vpr.cli_commands",
