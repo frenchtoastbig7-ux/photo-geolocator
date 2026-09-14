@@ -2,6 +2,8 @@
 name = "geoloc"
 version = "0.1.0"
 description = "Local-only single-image geolocation workbench for OSINT practitioners"
+license = { text = "MIT" }
+authors = [{ name = "Sovereign Edge Inc." }]
 requires-python = ">=3.11"
 dependencies = [
     "pillow>=10.2",

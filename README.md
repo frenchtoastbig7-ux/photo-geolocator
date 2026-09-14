@@ -430,7 +430,8 @@ fusion, ranking, reporting and the UI pick it up with no further changes.
 
 ## Licence
 
-MIT — see [LICENSE](LICENSE).
+The Photo Geolocation Workbench source code is released under the MIT
+licence, copyright (c) 2026 Sovereign Edge Inc. See [LICENSE](LICENSE).
 
 Leaflet is vendored under BSD-2-Clause so the workbench runs with no CDN.
 Model weights, OSM services and GeoNames data carry their own terms; all of

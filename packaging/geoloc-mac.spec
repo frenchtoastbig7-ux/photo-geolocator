@@ -130,6 +130,6 @@ app = BUNDLE(
         # A regular Dock app with a window, not a menu-bar agent.
         "LSUIElement": False,
         "NSRequiresAquaSystemAppearance": False,
-        "NSHumanReadableCopyright": "MIT licensed. Analyses run locally.",
+        "NSHumanReadableCopyright": "Copyright (c) 2026 Sovereign Edge Inc. MIT licensed.",
     },
 )
