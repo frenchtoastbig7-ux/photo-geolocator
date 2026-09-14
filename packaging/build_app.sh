@@ -12,7 +12,14 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$HERE/dist/Geolocation Workbench.app"
 PY="${PYTHON:-$HERE/.venv/bin/python}"
 
-[ -x "$PY" ] || { echo "no interpreter at $PY — create one with 'uv venv --python 3.12'"; exit 1; }
+# PYTHON may be a path or a bare command name. CI passes `PYTHON=python`, and
+# `[ -x python ]` tests for a file called "python" in the working directory,
+# which failed every CI build before PyInstaller ever ran. Resolve names on
+# PATH first, then check the result.
+if [[ "$PY" != */* ]]; then
+  PY="$(command -v "$PY" || true)"
+fi
+[ -n "$PY" ] && [ -x "$PY" ] || { echo "no interpreter found (PYTHON=${PYTHON:-unset}) — create one with 'uv venv --python 3.12'"; exit 1; }
 
 echo "==> regenerating icon"
 "$PY" "$HERE/packaging/make_icon.py"
