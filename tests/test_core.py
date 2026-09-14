@@ -1513,3 +1513,232 @@ def test_mapped_features_resolve_the_am_pm_ambiguity():
     # Nothing aligned: abstain rather than pick arbitrarily.
     assert match_against_features([(5.0, "morning"), (95.0, "afternoon")],
                                   [(48.0, "x")]) is None
+
+
+# ---------------------------------------------------------------------------
+# Corpus management: calibration, background builds, API
+# ---------------------------------------------------------------------------
+
+def _synthetic_index(sites=4, per_site=6, dim=16, noise=0.02, seed=0):
+    """Well-separated sites: each a cluster around its own axis."""
+    from geoloc.vpr.index import VPRIndex
+
+    rng = np.random.default_rng(seed)
+    desc, recs = [], []
+    for s in range(sites):
+        centre = np.zeros(dim, np.float32)
+        centre[s] = 1.0
+        for k in range(per_site):
+            v = centre + rng.normal(0, noise, dim).astype(np.float32)
+            desc.append(v / np.linalg.norm(v))
+            recs.append({"site_id": f"s{s}", "site_name": f"Site {s}",
+                         "site_lat": 40.0 + s, "site_lon": 2.0 + s,
+                         "title": f"s{s}_{k}.jpg", "path": f"/none/s{s}_{k}.jpg"})
+    return VPRIndex(area="synthetic", descriptors=np.stack(desc).astype(np.float32),
+                    records=recs)
+
+
+def test_calibration_refuses_absent_sites_and_finds_present_ones():
+    """Leave-one-site-out: with the true site removed, a clean corpus must
+    decline to name anything; with it present, it must find it."""
+    from geoloc.vpr.calibration import evaluate
+
+    r = evaluate(_synthetic_index())
+    assert r["verdict"] == "ok", r["message"]
+    assert r["fabrication_rate"] == 0.0
+    assert r["recall"] > 0.9
+    assert r["open_queries"] == r["closed_queries"] == 24
+
+
+def test_calibration_will_not_score_single_image_sites():
+    """With one image per site nothing can be held out, and a rate computed
+    from zero tests would read as a perfect score."""
+    from geoloc.vpr.calibration import evaluate
+
+    r = evaluate(_synthetic_index(per_site=1))
+    assert r["verdict"] == "insufficient"
+    assert r["fabrication_rate"] is None
+
+
+@pytest.fixture
+def corpus_home(tmp_path, monkeypatch):
+    from geoloc.config import SETTINGS
+    from geoloc.vpr import jobs
+
+    monkeypatch.setattr(SETTINGS, "model_cache", tmp_path)
+    monkeypatch.setattr(SETTINGS, "offline", False)
+    jobs._reset_for_tests()
+    yield tmp_path
+    jobs._reset_for_tests()
+
+
+def test_corpus_build_is_refused_offline(corpus_home, monkeypatch):
+    from geoloc.config import SETTINGS
+    from geoloc.vpr import jobs
+
+    monkeypatch.setattr(SETTINGS, "offline", True)
+    r = jobs.start_build({"area": "fr-rail", "country": "FR", "facility": "railway"})
+    assert r["ok"] is False and r["code"] == 409
+    assert "offline" in r["reason"].lower()
+    assert jobs.status()["state"] == "idle"
+
+
+@pytest.mark.parametrize(("bad", "fragment"), [
+    ({"area": "../escape", "country": "FR", "facility": "railway"}, "letters"),
+    ({"area": "ok", "country": "France", "facility": "railway"}, "two-letter"),
+    ({"area": "ok", "country": "FR", "facility": "spaceport"}, "facility"),
+    ({"area": "ok", "country": "FR", "facility": "railway", "near_lat": 43.3}, "both"),
+    ({"area": "ok", "country": "FR", "facility": "railway", "per_site": 0}, "between"),
+])
+def test_corpus_build_validates_parameters(corpus_home, bad, fragment):
+    from geoloc.vpr import jobs
+
+    r = jobs.start_build(bad)
+    assert r["ok"] is False and r["code"] == 400
+    assert fragment in r["reason"].lower()
+
+
+def test_only_one_corpus_build_runs_at_a_time(corpus_home, monkeypatch):
+    """Two harvests would share Commons' rate limit and one manifest."""
+    import threading
+
+    from geoloc.vpr import jobs
+
+    release, started = threading.Event(), threading.Event()
+
+    def fake_run(params):
+        started.set()
+        release.wait(5)
+        jobs._finish("done", "fake", result={})
+
+    monkeypatch.setattr(jobs, "_run", fake_run)
+    first = jobs.start_build({"area": "one", "country": "FR", "facility": "railway"})
+    assert first["ok"] and started.wait(5)
+    second = jobs.start_build({"area": "two", "country": "FR", "facility": "railway"})
+    assert second["ok"] is False and second["code"] == 409
+    assert "one" in second["reason"]
+    release.set()
+    jobs._THREAD.join(5)
+    assert jobs.status()["state"] == "done"
+
+
+def test_harvest_stops_at_cancel_and_keeps_what_it_fetched(corpus_home, monkeypatch):
+    """Cancelling must not throw away completed sites: the manifest is saved
+    after each one so an interrupted harvest loses nothing."""
+    import contextlib
+    import threading
+
+    from geoloc.vpr import corpus
+
+    calls: list[str] = []
+    cancel = threading.Event()
+
+    def fake_site(client, area, site, **kwargs):
+        calls.append(site["name"])
+        if len(calls) == 2:
+            cancel.set()
+        return [{"site_id": site["id"], "site_name": site["name"], "site_lat": 0.0,
+                 "site_lon": 0.0, "title": f"{site['name']}.jpg", "path": "/x"}]
+
+    monkeypatch.setattr(corpus, "harvest_site", fake_site)
+    monkeypatch.setattr(corpus, "_client", lambda: contextlib.nullcontext(None))
+    progress: list[tuple[int, int]] = []
+    sites = [{"id": f"s{i}", "name": f"site{i}", "lat": 0.0, "lon": 0.0} for i in range(5)]
+
+    records, stats = corpus.harvest("cancel-test", sites, cancel=cancel,
+                                    on_progress=lambda d, t, s: progress.append((d, t)))
+    assert calls == ["site0", "site1"]
+    assert len(records) == 2 and progress == [(1, 5), (2, 5)]
+    assert corpus.load_manifest("cancel-test") == records
+    assert any("cancelled" in n for n in stats.notes)
+
+
+def test_corpus_delete_refuses_unsafe_names(corpus_home):
+    """area_dir strips unsafe characters, which is right when creating and
+    wrong when deleting: "../x" would quietly become "x"."""
+    from geoloc.vpr import corpus
+
+    for bad in ("../outside", "a/b", "", "x" * 65, "has space"):
+        with pytest.raises(ValueError):
+            corpus.delete_area(bad)
+    with pytest.raises(FileNotFoundError):
+        corpus.delete_area("never-built")
+
+    d = corpus.area_dir("real-one")
+    (d / "images").mkdir(parents=True)
+    (d / "manifest.json").write_text("[]")
+    (d / "images" / "a.jpg").write_bytes(b"x")
+    assert corpus.delete_area("real-one") == 2
+    assert not d.exists()
+
+
+def test_corpus_api_lists_and_guards(corpus_home, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from geoloc.config import SETTINGS
+    from geoloc.server import app
+
+    client = TestClient(app)
+    body = client.get("/api/corpus").json()
+    assert body["areas"] == [] and body["job"]["state"] == "idle"
+    assert any(f["key"] == "railway" for f in body["facilities"])
+    assert client.delete("/api/corpus/never-built").status_code == 404
+    assert client.post("/api/corpus/never-built/calibrate").status_code == 404
+
+    monkeypatch.setattr(SETTINGS, "offline", True)
+    r = client.post("/api/corpus/build",
+                    json={"area": "x", "country": "FR", "facility": "railway"})
+    assert r.status_code == 409
+
+
+def test_megaloc_install_check_looks_where_the_weights_live(tmp_path, monkeypatch):
+    """Regression: the check looked for weights under torch.hub, where MegaLoc
+    never stores them, so it always reported "not installed" -- and with
+    offline mode on, visual matching was silently skipped."""
+    from geoloc.config import SETTINGS
+    from geoloc.vpr import model as vpr_model
+
+    monkeypatch.setattr(SETTINGS, "model_cache", tmp_path)
+    monkeypatch.setattr(vpr_model, "MIN_WEIGHT_BYTES", 10)
+    assert not vpr_model.is_installed()
+
+    checkout = tmp_path / "torchhub" / "hub" / vpr_model.CHECKOUT_DIR
+    checkout.mkdir(parents=True)
+    (checkout / "megaloc_model.py").write_text("class MegaLoc: pass\n")
+    assert not vpr_model.is_installed(), "code alone is not an install"
+
+    repo = tmp_path / "huggingface" / vpr_model.WEIGHTS_REPO_DIR
+    (repo / "blobs").mkdir(parents=True)
+    snap = repo / "snapshots" / "abc123"
+    snap.mkdir(parents=True)
+    (snap / "model.safetensors").symlink_to(repo / "blobs" / "unfinished")
+    assert not vpr_model.is_installed(), "a dangling snapshot link is not an install"
+
+    (repo / "blobs" / "unfinished").write_bytes(b"x" * 64)
+    assert vpr_model.is_installed()
+    assert vpr_model.weights_path() == snap / "model.safetensors"
+
+
+def test_installed_megaloc_never_goes_through_torch_hub(monkeypatch):
+    """torch.hub validates against the GitHub API and the upstream hubconf
+    calls HuggingFace on every load. Once installed, neither may be used, or
+    offline mode leaks traffic."""
+    torch = pytest.importorskip("torch")
+    from geoloc.vpr import model as vpr_model
+
+    class Fake:
+        def to(self, device):
+            return self
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("torch.hub.load used for an installed model")
+
+    monkeypatch.setattr(vpr_model, "is_installed", lambda: True)
+    monkeypatch.setattr(vpr_model, "_load_local", Fake)
+    monkeypatch.setattr(torch.hub, "load", forbidden)
+    vpr_model._load.cache_clear()
+    try:
+        model, _device, _torch = vpr_model._load()
+        assert isinstance(model, Fake)
+    finally:
+        vpr_model._load.cache_clear()

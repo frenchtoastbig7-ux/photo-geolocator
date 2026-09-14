@@ -274,6 +274,7 @@ function render(data) {
                  + renderMetaFields(state.case);
   const host = $('operatorPanels');
   if (host) host.innerHTML = panels;
+  renderCorpusSuggest(state.case);
   $('entropy').innerHTML = area == null ? '' : `
     <div class="precision ${weak ? 'weak' : 'ok'}">
       <strong>Precision: ${esc(band.toUpperCase())}</strong>
@@ -581,3 +582,245 @@ $('modal').addEventListener('click', e => {
 
 loadSettings();
 refreshModel();
+
+/* ── reference corpora ───────────────────────────────────────── */
+const CORPUS_PHASE = {
+  resolving: 'Finding sites', harvesting: 'Harvesting photographs',
+  embedding: 'Embedding', calibrating: 'Calibrating',
+};
+let corpusPoll = null;
+
+function corpusNotice(msg, isErr) {
+  const el = $('corpusNotice');
+  el.textContent = msg || '';
+  el.classList.toggle('err', !!isErr);
+}
+
+async function openCorpora(prefill) {
+  $('corpusModal').classList.remove('hidden');
+  corpusNotice('');
+  if (prefill) applyCorpusPrefill(prefill);
+  await refreshCorpora();
+}
+
+function closeCorpora() { $('corpusModal').classList.add('hidden'); }
+
+async function refreshCorpora() {
+  let d;
+  try { d = await (await fetch('/api/corpus')).json(); }
+  catch { corpusNotice('Could not reach the workbench server.', true); return; }
+  state.corpus = d;
+  renderCorpusFacilities(d.facilities);
+  renderCorpusList(d);
+  renderCorpusJob(d.job);
+  $('corpusOffline').classList.toggle('hidden', !d.offline);
+  $('cStart').disabled = d.offline || d.job.state === 'running';
+  $('corpusModelNote').textContent = d.vpr_model_installed ? '' :
+    'The place-recognition model (MegaLoc, about 0.9 GB) is not installed yet; the first build downloads it.';
+  ensureCorpusPolling(d.job);
+}
+
+function ensureCorpusPolling(job) {
+  const running = !!job && job.state === 'running';
+  if (running && !corpusPoll) corpusPoll = setInterval(pollCorpusJob, 1500);
+  if (!running && corpusPoll) { clearInterval(corpusPoll); corpusPoll = null; }
+}
+
+async function pollCorpusJob() {
+  let job;
+  try { job = await (await fetch('/api/corpus/job')).json(); }
+  catch { return; }
+  renderCorpusJob(job);
+  if (job.state === 'running') { $('cStart').disabled = true; return; }
+  ensureCorpusPolling(job);
+  if (!$('corpusModal').classList.contains('hidden')) refreshCorpora();
+}
+
+function renderCorpusFacilities(list) {
+  const sel = $('cFacility');
+  if (!sel.options.length) {
+    sel.innerHTML = '<option value="">Choose…</option>' + list.map(f =>
+      `<option value="${esc(f.key)}">${esc(f.label)}</option>`).join('');
+  }
+  if (state.corpusPrefillFacility != null) {
+    sel.value = state.corpusPrefillFacility;
+    state.corpusPrefillFacility = null;
+  }
+}
+
+function applyCorpusPrefill(p) {
+  if (p.country) $('cCountry').value = p.country;
+  if (p.near) $('cNear').value = `${p.near[0].toFixed(4)}, ${p.near[1].toFixed(4)}`;
+  if (p.radius) $('cRadius').value = p.radius;
+  state.corpusPrefillFacility = p.facility || '';
+  if ($('cFacility').options.length) renderCorpusFacilities([]);
+  const parts = [p.country || 'area', p.facility || 'sites',
+                 p.near ? `${p.near[0].toFixed(2)}_${p.near[1].toFixed(2)}` : ''];
+  $('cName').value = parts.filter(Boolean).join('-').toLowerCase()
+    .replace(/[^a-z0-9_-]/g, '-').slice(0, 64);
+}
+
+function calibrationBadge(cal, limit) {
+  if (!cal) return '<span class="badge warn" title="Calibrate before trusting matches from this corpus.">not calibrated</span>';
+  if (cal.verdict === 'insufficient') return `<span class="badge warn" title="${esc(cal.message)}">too few images per site</span>`;
+  if (cal.stale) return '<span class="badge warn" title="The index has changed since this corpus was calibrated.">stale — recalibrate</span>';
+  const fab = (cal.fabrication_rate * 100).toFixed(1);
+  const found = cal.recall == null ? '' : ` · finds ${Math.round(cal.recall * 100)}%`;
+  const cls = cal.fabrication_rate > limit ? 'bad' : 'ok';
+  return `<span class="badge ${cls}" title="${esc(cal.message)}">${fab}% fabrication${found}</span>`;
+}
+
+function renderCorpusList(d) {
+  const host = $('corpusList');
+  if (!d.areas.length) {
+    host.innerHTML = '<p class="muted small">No corpora yet. Build one below, or from an analysis result.</p>';
+    return;
+  }
+  host.innerHTML = `<table class="corpus"><thead><tr>
+      <th>Corpus</th><th class="num">Images</th><th class="num">Sites</th><th>Calibration</th><th></th>
+    </tr></thead><tbody>${d.areas.map(a => `<tr>
+      <td class="mono">${esc(a.name)}${a.indexed < a.images
+        ? ` <span class="muted small">(${a.indexed} indexed)</span>` : ''}</td>
+      <td class="num">${a.images}</td>
+      <td class="num">${a.sites}</td>
+      <td>${a.building ? '<span class="badge">building…</span>'
+                       : calibrationBadge(a.calibration, d.acceptable_fabrication)}</td>
+      <td class="acts">
+        <button class="ghost sm" data-act="calibrate" data-area="${esc(a.name)}"
+          ${a.building || !a.indexed ? 'disabled' : ''}>Calibrate</button>
+        <button class="ghost sm danger" data-act="delete" data-area="${esc(a.name)}"
+          data-images="${a.images}" ${a.building ? 'disabled' : ''}>Delete</button>
+      </td></tr>`).join('')}</tbody></table>`;
+}
+
+function renderCorpusJob(job) {
+  const host = $('corpusJob');
+  const btn = $('corpusBtn');
+  if (!job || job.state === 'idle') { host.innerHTML = ''; btn.textContent = 'Corpora'; return; }
+
+  if (job.state === 'running') {
+    const pct = job.total ? Math.round(job.done / job.total * 100) : null;
+    btn.textContent = pct == null ? 'Corpora · building' : `Corpora · ${pct}%`;
+    host.innerHTML = `<div class="jobbox">
+      <div><strong>${esc(CORPUS_PHASE[job.phase] || 'Working')}</strong>
+        <span class="mono small muted">${esc(job.area)}</span></div>
+      <div class="progress${pct == null ? ' indet' : ''}"><span class="fill" style="width:${pct == null ? 30 : pct}%"></span></div>
+      <p class="muted small">${esc(job.message)}${job.images ? ` · ${job.images} images so far` : ''}</p>
+      <button class="ghost sm" id="corpusCancel">Cancel</button></div>`;
+    $('corpusCancel').addEventListener('click', async () => {
+      await fetch('/api/corpus/cancel', { method: 'POST' });
+      pollCorpusJob();
+    });
+    return;
+  }
+
+  btn.textContent = 'Corpora';
+  if (job.state === 'done') {
+    const r = job.result || {};
+    const cal = r.calibration;
+    host.innerHTML = `<div class="jobbox ${cal && cal.verdict === 'too_high' ? 'warn' : 'ok'}">
+      <strong>Built ${esc(job.area)}</strong>
+      <p class="small">${r.images} images across ${r.sites} sites${r.failed_downloads
+        ? `; ${r.failed_downloads} downloads failed` : ''}.</p>
+      ${cal ? `<p class="small">${esc(cal.message)}</p>` : ''}
+      <p class="muted small">Re-run the analysis to match against it.</p></div>`;
+  } else if (job.state === 'cancelled') {
+    host.innerHTML = `<div class="jobbox warn"><strong>Cancelled</strong><p class="small">${esc(job.message)}</p></div>`;
+  } else {
+    host.innerHTML = `<div class="jobbox bad"><strong>Build failed</strong><p class="small">${esc(job.error)}</p></div>`;
+  }
+}
+
+function renderCorpusSuggest(c) {
+  const host = $('corpusSuggest');
+  if (!host) return;
+  const ev = c.evidence || [];
+  const top = (c.candidates || [])[0];
+  if (!top || ev.some(e => (e.id || '').startsWith('vpr.match.'))) { host.innerHTML = ''; return; }
+
+  // A disputed GPS tag puts the top candidate on the tag. Build around what
+  // the image content supports instead, or the corpus covers the fabrication.
+  const mv = c.metadata_verdict || {};
+  const near = mv.verdict === 'conflict' && mv.content_best ? mv.content_best : [top.lat, top.lon];
+  const fac = ev.find(e => (e.id || '').startsWith('facility.'));
+  const facKey = fac ? fac.id.split('.')[1] : '';
+  const cc = (top.country || ((c.top_countries || [])[0] || [])[0] || '').toUpperCase();
+  const radius = { pinpoint: 5, locality: 15, regional: 60 }[c.precision_band] || 150;
+
+  let why = 'No reference corpus covers this area yet, so visual matching could not run.';
+  if (ev.some(e => e.id === 'vpr.unavailable')) {
+    why = 'The place-recognition model is not installed; the first corpus build downloads it.';
+  } else if (ev.some(e => (e.id || '').startsWith('vpr.nomatch.'))) {
+    why = 'Visual matching found no confident match in the corpora on disk.';
+  }
+  host.innerHTML = `<section class="panel"><h3>Visual matching</h3>
+    <p class="small">${esc(why)} A corpus for this area lets the workbench recognise specific sites here.</p>
+    ${facKey ? '' : '<p class="muted small">No facility type was inferred from the image, so you will need to choose one.</p>'}
+    <button class="ghost wide" id="suggestCorpus">Build a corpus around this location</button></section>`;
+  $('suggestCorpus').addEventListener('click', () =>
+    openCorpora({ country: cc, facility: facKey, near, radius }));
+}
+
+$('corpusBtn').addEventListener('click', () => openCorpora());
+$('corpusClose').addEventListener('click', closeCorpora);
+$('corpusModal').addEventListener('click', e => { if (e.target === $('corpusModal')) closeCorpora(); });
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !$('corpusModal').classList.contains('hidden')) closeCorpora();
+});
+$('offlineToggle').addEventListener('change', () => {
+  if (!$('corpusModal').classList.contains('hidden')) setTimeout(refreshCorpora, 400);
+});
+
+$('corpusList').addEventListener('click', async e => {
+  const btn = e.target.closest('button[data-act]');
+  if (!btn) return;
+  const area = btn.dataset.area;
+  if (btn.dataset.act === 'calibrate') {
+    btn.disabled = true;
+    btn.textContent = 'Calibrating…';
+    const r = await fetch(`/api/corpus/${encodeURIComponent(area)}/calibrate`, { method: 'POST' });
+    corpusNotice(r.ok ? '' : ((await r.json()).detail || r.statusText), !r.ok);
+  } else if (btn.dataset.act === 'delete') {
+    if (!confirm(`Delete corpus "${area}" and its ${btn.dataset.images} downloaded images? This cannot be undone.`)) return;
+    const r = await fetch(`/api/corpus/${encodeURIComponent(area)}`, { method: 'DELETE' });
+    corpusNotice(r.ok ? `Deleted ${area}.` : ((await r.json()).detail || r.statusText), !r.ok);
+  }
+  refreshCorpora();
+});
+
+$('corpusForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const body = {
+    area: $('cName').value.trim(),
+    country: $('cCountry').value.trim(),
+    facility: $('cFacility').value,
+    radius_km: Number($('cRadius').value),
+    limit: Number($('cLimit').value),
+    per_site: Number($('cPerSite').value),
+  };
+  const near = $('cNear').value.trim();
+  if (near) {
+    const parts = near.split(',').map(v => Number(v.trim()));
+    if (parts.length !== 2 || parts.some(Number.isNaN)) {
+      corpusNotice('Near must be written as "lat, lon".', true);
+      return;
+    }
+    [body.near_lat, body.near_lon] = parts;
+  }
+  $('cStart').disabled = true;
+  corpusNotice('');
+  const r = await fetch('/api/corpus/build', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (!r.ok) corpusNotice((await r.json()).detail || r.statusText, true);
+  refreshCorpora();
+});
+
+// A build survives page reloads; pick its progress back up.
+(async () => {
+  try {
+    const job = await (await fetch('/api/corpus/job')).json();
+    renderCorpusJob(job);
+    ensureCorpusPolling(job);
+  } catch { /* server not ready yet */ }
+})();

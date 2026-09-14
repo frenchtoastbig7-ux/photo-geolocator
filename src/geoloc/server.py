@@ -112,6 +112,91 @@ def api_model_remove() -> dict[str, Any]:
     return {**modelmgr.remove(), **modelmgr.status()}
 
 
+@app.get("/api/corpus")
+def api_corpus() -> dict[str, Any]:
+    """Reference corpora on disk, any build in progress, and build options."""
+    from .geo.facility import FACILITIES
+    from .vpr import calibration, jobs
+    from .vpr import model as vpr_model
+
+    return {
+        "areas": jobs.list_corpora(),
+        "job": jobs.status(),
+        "vpr_model_installed": vpr_model.is_installed(),
+        "offline": SETTINGS.offline,
+        "facilities": [{"key": f.key, "label": f.label} for f in FACILITIES],
+        "acceptable_fabrication": calibration.ACCEPTABLE_FABRICATION,
+    }
+
+
+@app.get("/api/corpus/job")
+def api_corpus_job() -> dict[str, Any]:
+    """Progress of the current or most recent build. Cheap enough to poll."""
+    from .vpr import jobs
+
+    return jobs.status()
+
+
+@app.post("/api/corpus/build")
+async def api_corpus_build(request: Request) -> dict[str, Any]:
+    from .vpr import jobs
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Expected a JSON body.") from None
+    if not isinstance(body, dict):
+        raise HTTPException(400, "Expected a JSON object.")
+    result = jobs.start_build(body)
+    if not result.get("ok"):
+        raise HTTPException(result.get("code", 400),
+                            result.get("reason", "Cannot start the build."))
+    return result
+
+
+@app.post("/api/corpus/cancel")
+def api_corpus_cancel() -> dict[str, Any]:
+    from .vpr import jobs
+
+    return jobs.cancel()
+
+
+@app.post("/api/corpus/{area}/calibrate")
+def api_corpus_calibrate(area: str) -> dict[str, Any]:
+    from .vpr import calibration, corpus, jobs
+
+    try:
+        corpus.validate_area_name(area)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    job = jobs.status()
+    if job["state"] == "running" and job["area"] == area:
+        raise HTTPException(409, "This corpus is still being built; it is "
+                                 "calibrated automatically when the build ends.")
+    try:
+        return calibration.run(area)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from None
+
+
+@app.delete("/api/corpus/{area}")
+def api_corpus_delete(area: str) -> dict[str, Any]:
+    from .vpr import corpus, jobs
+
+    try:
+        corpus.validate_area_name(area)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    job = jobs.status()
+    if job["state"] == "running" and job["area"] == area:
+        raise HTTPException(409, "Cancel the build before deleting this corpus.")
+    try:
+        removed = corpus.delete_area(area)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from None
+    return {"ok": True, "area": area, "deleted_files": removed}
+
+
 @app.get("/api/cases")
 def list_cases() -> list[dict[str, Any]]:
     SETTINGS.ensure_dirs()

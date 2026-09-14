@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
+import shutil
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -286,8 +288,16 @@ def harvest_site(client: httpx.Client, area: str, site: dict[str, Any],
 
 
 def harvest(area: str, sites: list[dict[str, Any]], *, per_site: int = 60,
-            radius_m: int = 500, use_categories: bool = False, progress=None) -> tuple[list[dict[str, Any]], HarvestStats]:
-    """Harvest reference imagery for a list of sites into one named area."""
+            radius_m: int = 500, use_categories: bool = False, progress=None,
+            on_progress=None, cancel=None) -> tuple[list[dict[str, Any]], HarvestStats]:
+    """Harvest reference imagery for a list of sites into one named area.
+
+    `progress` receives a message per site for a spinner; `on_progress(done,
+    total, stats)` receives counts for a progress bar. Setting the `cancel`
+    event stops before the next site and keeps everything already written:
+    the manifest is saved after every site precisely so an interrupted
+    harvest loses nothing.
+    """
     if not SETTINGS.net_allowed():
         raise OfflineError("Corpus building needs network access; offline mode is on.")
 
@@ -301,22 +311,27 @@ def harvest(area: str, sites: list[dict[str, Any]], *, per_site: int = 60,
     known = {(r["site_id"], r["title"]) for r in records}
     with _client() as client:
         for i, site in enumerate(sites, 1):
+            if cancel is not None and cancel.is_set():
+                stats.notes.append(f"cancelled before site {i} of {len(sites)}")
+                break
             if progress:
-                progress(f"[{i}/{len(sites)}] {site.get('name') or site['site_id'] if 'site_id' in site else site.get('name','site')}")
+                progress(f"[{i}/{len(sites)}] {site.get('name') or site.get('id') or 'site'}")
             try:
                 fresh = harvest_site(client, area, site, per_site=per_site,
                                      radius_m=radius_m,
                                      use_categories=use_categories, stats=stats)
             except Exception as exc:
-                stats.notes.append(f"{site.get('name','site')}: {type(exc).__name__}")
-                continue
+                stats.notes.append(f"{site.get('name', 'site')}: {type(exc).__name__}")
+                fresh = []
             for rec in fresh:
-                if (rec["site_id"], rec["title"]) not in known:
-                    known.add((rec["site_id"], rec["title"]))
+                key = (rec["site_id"], rec["title"])
+                if key not in known:
+                    known.add(key)
                     records.append(rec)
-            # Written every site so an interrupted harvest loses nothing.
             manifest_path.parent.mkdir(parents=True, exist_ok=True)
             manifest_path.write_text(json.dumps(records, indent=1))
+            if on_progress:
+                on_progress(i, len(sites), stats)
     return records, stats
 
 
@@ -335,3 +350,31 @@ def list_areas() -> Iterator[tuple[str, int]]:
     for d in sorted(root.iterdir()):
         if d.is_dir():
             yield d.name, len(load_manifest(d.name))
+
+
+_AREA_NAME = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def validate_area_name(area: str) -> str:
+    """Refuse names that could not have been produced by `area_dir` unchanged.
+
+    `area_dir` silently strips unsafe characters, which is right for creating
+    a directory and wrong for deleting one: "../x" would quietly become "x"
+    and delete a different corpus than the one requested.
+    """
+    if not _AREA_NAME.fullmatch(area or ""):
+        raise ValueError("Corpus names may use letters, digits, '-' and '_' "
+                         "only, up to 64 characters.")
+    return area
+
+
+def delete_area(area: str) -> int:
+    """Remove a corpus and everything harvested for it; returns files removed."""
+    validate_area_name(area)
+    root = corpus_root().resolve()
+    path = area_dir(area).resolve()
+    if path.parent != root or not path.is_dir():
+        raise FileNotFoundError(f"No corpus named {area!r}.")
+    removed = sum(1 for p in path.rglob("*") if p.is_file())
+    shutil.rmtree(path)
+    return removed

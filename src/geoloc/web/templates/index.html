@@ -19,6 +19,7 @@
       <input type="checkbox" id="offlineToggle">
       <span>Offline mode</span>
     </label>
+    <button class="ghost" id="corpusBtn" title="Reference imagery for visual matching">Corpora</button>
     <button class="ghost" id="historyBtn">Cases</button>
   </div>
 </header>
@@ -120,6 +121,7 @@
       <div id="entropy" class="muted small"></div>
       <div id="candidates"></div>
       <div id="operatorPanels"></div>
+      <div id="corpusSuggest"></div>
 
       <h2>Countries</h2>
       <div id="countryBars"></div>
@@ -146,6 +148,49 @@
 <div id="modal" class="modal hidden"><div class="modal-inner">
   <div class="modal-hd"><strong>Saved cases</strong><button id="modalClose" class="ghost">Close</button></div>
   <div id="caseList"></div>
+</div></div>
+
+<div id="corpusModal" class="modal hidden"><div class="modal-inner wide">
+  <div class="modal-hd"><strong>Reference corpora</strong><button id="corpusClose" class="ghost">Close</button></div>
+  <p class="hint">Visual matching can only recognise places whose photographs
+    have been harvested here. Build a corpus for the area you are working, then
+    check its calibration: the fabrication rate is how often it names a place
+    the corpus does not contain.</p>
+  <div id="corpusModelNote" class="muted small"></div>
+  <div id="corpusList"></div>
+
+  <h3>Build a corpus</h3>
+  <div id="corpusOffline" class="banner hidden">Offline mode is on. A build
+    downloads reference photographs from Wikimedia Commons and mapped sites from
+    OpenStreetMap, so it is unavailable until offline mode is turned off.</div>
+  <form id="corpusForm" autocomplete="off">
+    <div class="row">
+      <div><label for="cName">Name</label>
+        <input id="cName" required maxlength="64" pattern="[A-Za-z0-9_\-]{1,64}" placeholder="fr-railway-marseille"></div>
+      <div><label for="cCountry">Country <span class="muted">ISO2</span></label>
+        <input id="cCountry" required maxlength="2" placeholder="FR"></div>
+    </div>
+    <label for="cFacility">Facility type</label>
+    <select id="cFacility" required></select>
+    <div class="row">
+      <div><label for="cNear">Near <span class="muted">lat, lon &mdash; optional</span></label>
+        <input id="cNear" placeholder="43.3033, 5.3812"></div>
+      <div><label for="cRadius">Radius <span class="muted">km</span></label>
+        <input id="cRadius" type="number" min="1" max="2000" value="60"></div>
+    </div>
+    <div class="row">
+      <div><label for="cLimit">Maximum sites</label>
+        <input id="cLimit" type="number" min="1" max="200" value="20"></div>
+      <div><label for="cPerSite">Images per site</label>
+        <input id="cPerSite" type="number" min="5" max="300" value="60"></div>
+    </div>
+    <p class="hint">Only the site list and Commons search requests leave this
+      machine; no analysed image is sent. Commons rate-limits heavily, so expect
+      roughly a minute per site.</p>
+    <button id="cStart" class="primary" type="submit">Build corpus</button>
+    <div id="corpusNotice" class="small"></div>
+  </form>
+  <div id="corpusJob"></div>
 </div></div>
 
 <script src="/static/leaflet.js"></script>

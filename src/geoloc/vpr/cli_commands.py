@@ -13,34 +13,22 @@ console = Console()
 
 def _sites_for(country: str | None, facility: str | None, near: str | None,
                radius_km: float, limit: int) -> list[dict]:
-    """Resolve a site list from a country+facility, optionally near a point."""
-    from ..geo import facility as facility_mod
-    from ..geo.grid import haversine_km
+    """Resolve a site list for the CLI; the logic lives in vpr.sites."""
+    from . import sites as sites_mod
 
     if not (country and facility):
         raise typer.BadParameter("--country and --facility are both required")
-    fac = next((f for f in facility_mod.FACILITIES if f.key == facility), None)
-    if fac is None:
-        raise typer.BadParameter(f"unknown facility {facility!r}")
-
-    raw = facility_mod.fetch_sites(country.upper(), fac)
-    sites = [{"id": f"{country.upper()}_{facility}_{i}",
-              "name": s.get("name") or f"site {i}",
-              "lat": s["lat"], "lon": s["lon"]}
-             for i, s in enumerate(raw)]
-
+    point = None
     if near:
         try:
             lat_s, lon_s = near.split(",")
-            lat, lon = float(lat_s), float(lon_s)
+            point = (float(lat_s), float(lon_s))
         except ValueError as exc:
             raise typer.BadParameter("--near must be 'lat,lon'") from exc
-        sites = [s for s in sites
-                 if haversine_km(lat, lon, s["lat"], s["lon"]) <= radius_km]
-        sites.sort(key=lambda s: haversine_km(lat, lon, s["lat"], s["lon"]))
-
-    named = [s for s in sites if s["name"] and not s["name"].startswith("site ")]
-    return (named or sites)[:limit]
+    try:
+        return sites_mod.resolve(country, facility, point, radius_km, limit)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
 
 @app.command("build")
@@ -148,95 +136,38 @@ def calibrate(
     area: str = typer.Option(..., "--area"),
     per_site: int = typer.Option(6, "--per-site", help="Query images per held-out site."),
 ):
-    """Measure how often this corpus fabricates an identification.
+    """Measure how often this corpus names a place it does not contain.
 
-    Leave-one-SITE-out, not leave-one-image-out. The distinction is the whole
-    point: holding out a single image leaves its site in the index and only
-    measures ranking among known places, which is not the task. In practice
-    the photographed place is usually absent from the corpus entirely, and
-    what matters is whether the tool says so.
-
-    Two figures are reported:
-
-    * open-set false accepts -- queries whose site was removed wholesale.
-      Every acceptance here is a fabricated identification, and this number
-      is the one to judge a corpus by.
-    * closed-set correct accepts -- queries whose site remains. This measures
-      how much genuine signal the thresholds discard, i.e. the cost of
-      caution.
+    Leave-one-site-out; see geoloc.vpr.calibration for why that matters. The
+    result is saved beside the index, where the workbench shows it.
     """
-    import numpy as np
+    from . import calibration
 
-    from . import index as index_mod
-    from . import match as match_mod
-
-    idx = index_mod.load(area)
-    if idx is None:
+    try:
+        result = calibration.run(area, per_site=per_site)
+    except FileNotFoundError:
         console.print(f"[red]No index for area {area!r}.[/]")
+        raise typer.Exit(1) from None
+
+    if result["verdict"] == "insufficient":
+        console.print(f"[yellow]{result['message']}[/]")
         raise typer.Exit(1)
 
-    class _Sub:
-        def __init__(self, desc, recs):
-            self.descriptors, self.records = desc, recs
-
-        def __len__(self):
-            return len(self.records)
-
-        def search(self, q, top_k=25):
-            sims = self.descriptors @ q
-            k = min(top_k, sims.size)
-            i = np.argpartition(sims, -k)[-k:]
-            i = i[np.argsort(sims[i])[::-1]]
-            return [(float(sims[j]), self.records[j]) for j in i]
-
-    sites = sorted({r["site_id"] for r in idx.records})
-    open_n = open_fa = closed_n = closed_ok = 0
-    for site in sites:
-        keep = np.array([r["site_id"] != site for r in idx.records])
-        held = [i for i, r in enumerate(idx.records) if r["site_id"] == site]
-        if len(held) < 2:
-            continue
-        absent = _Sub(idx.descriptors[keep],
-                      [r for r, m in zip(idx.records, keep, strict=True) if m])
-        for qi in held[:per_site]:
-            q = idx.descriptors[qi]
-            res = match_mod.match(absent, q)
-            open_n += 1
-            open_fa += bool(res.accepted)
-
-            present = keep.copy()
-            present[held] = True
-            present[qi] = False
-            sub = _Sub(idx.descriptors[present],
-                       [r for r, m in zip(idx.records, present, strict=True) if m])
-            r2 = match_mod.match(sub, q)
-            closed_n += 1
-            closed_ok += bool(r2.accepted and r2.matches
-                              and r2.matches[0].site_id == site)
-
-    if not open_n:
-        console.print("[yellow]Every site has fewer than two images; harvest "
-                      "more per site before calibrating.[/]")
-        raise typer.Exit(1)
-
-    fa_rate = open_fa / open_n
-    t = Table(title=f"Calibration for '{area}' ({len(idx)} images, {len(sites)} sites)")
+    t = Table(title=(f"Calibration for '{area}' ({result['images']} images, "
+                     f"{result['sites']} sites)"))
     t.add_column("test")
     t.add_column("queries", justify="right")
     t.add_column("result", justify="right")
-    t.add_row("open set — site absent, must reject", str(open_n),
-              f"{open_fa} fabricated ({fa_rate * 100:.0f}%)")
-    t.add_row("closed set — site present, should find it", str(closed_n),
-              f"{closed_ok} correct ({closed_ok / max(closed_n,1) * 100:.0f}%)")
+    t.add_row("open set — site absent, must reject", str(result["open_queries"]),
+              f"{result['fabricated']} fabricated ({result['fabrication_rate']:.0%})")
+    t.add_row("closed set — site present, should find it",
+              str(result["closed_queries"]),
+              f"{result['correct']} correct ({result['recall']:.0%})")
     console.print(t)
 
-    if fa_rate > 0.05:
-        console.print(f"\n[red]This corpus fabricates on {fa_rate*100:.0f}% of "
-                      "absent-site queries.[/] Raise MIN_SIMILARITY or harvest "
-                      "denser coverage before trusting its matches.")
-    else:
-        console.print(f"\n[green]Fabrication rate {fa_rate*100:.1f}%[/] — "
-                      "acceptable. Note the closed-set figure is the cost of "
-                      "that caution: genuine matches are discarded to buy it.")
-    console.print(f"[dim]Thresholds: similarity floor {match_mod.MIN_SIMILARITY}, "
-                  f"margin {match_mod.MIN_MARGIN}, ratio {match_mod.MIN_RATIO}[/]")
+    style = "red" if result["verdict"] == "too_high" else "green"
+    console.print(f"\n[{style}]{result['message']}[/]")
+    th = result["thresholds"]
+    console.print(f"[dim]Thresholds: similarity floor {th['min_similarity']}, "
+                  f"margin {th['min_margin']}, ratio {th['min_ratio']}. "
+                  "Saved for the workbench.[/]")

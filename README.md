@@ -270,6 +270,20 @@ geoloc corpus calibrate --area fr-rail      # measure before trusting it
 geoloc corpus match photo.jpg --area fr-rail
 ```
 
+The same controls are in the workbench under **Corpora**: list, build,
+calibrate and delete, with progress for the build in flight and a cancel
+button that keeps whatever was already harvested. A build calibrates itself
+when it finishes, and each corpus shows its fabrication rate, flagged when it
+exceeds 5% or when the index has changed since calibration. When an analysis
+ends without a visual match, the results offer to build a corpus around the
+location, pre-filled from what the image established. For a disputed GPS tag
+that prefill uses the location the image content supports, not the tag.
+
+Once installed, the place-recognition model loads entirely from disk. It does
+not go through `torch.hub`, which contacts GitHub and HuggingFace on every
+load even when fully cached, so offline mode keeps visual matching working
+with no outbound traffic.
+
 Reference imagery comes from geotagged Wikimedia Commons files within a
 radius of each site. Descriptors come from MegaLoc, a model trained for place
 recognition rather than semantic similarity.

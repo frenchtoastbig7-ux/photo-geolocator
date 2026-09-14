@@ -38,7 +38,8 @@ def index_path(area: str) -> Path:
     return corpus.area_dir(area) / "index.npz"
 
 
-def build(area: str, *, progress=None, batch_size: int = 8) -> VPRIndex:
+def build(area: str, *, progress=None, on_progress=None,
+          batch_size: int = 8) -> VPRIndex:
     """Embed every harvested image for an area and persist the descriptors.
 
     Incremental: images already embedded are carried over, so re-running
@@ -65,7 +66,8 @@ def build(area: str, *, progress=None, batch_size: int = 8) -> VPRIndex:
         progress(f"embedding {len(todo)} new image(s)")
     if todo:
         paths = [Path(r["path"]) for r in todo]
-        vectors = model.embed_images(paths, batch_size=batch_size)
+        vectors = model.embed_images(paths, batch_size=batch_size,
+                                    progress=on_progress)
         for rec, vec in zip(todo, vectors, strict=True):
             existing[rec["path"]] = vec
 
@@ -92,3 +94,20 @@ def load(area: str) -> VPRIndex | None:
         return VPRIndex(area=area, descriptors=blob["descriptors"], records=records)
     except Exception:
         return None
+
+
+def indexed_count(area: str) -> int:
+    """Number of indexed images, without loading the descriptors.
+
+    The workbench lists corpora on every refresh; reading only the records
+    entry of the archive keeps that from decompressing thousands of 8448-wide
+    descriptors each time.
+    """
+    path = index_path(area)
+    if not path.exists():
+        return 0
+    try:
+        with np.load(path, allow_pickle=False) as blob:
+            return len(json.loads(blob["records"].item()))
+    except Exception:
+        return 0

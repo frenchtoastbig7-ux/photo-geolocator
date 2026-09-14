@@ -176,6 +176,7 @@ def _smoke_test() -> int:
     for module in ("geoloc.metaverify", "geoloc.analyzers.shadows",
                    "geoloc.analyzers.heading", "geoloc.analyzers.solar",
                    "geoloc.vpr.model", "geoloc.vpr.index", "geoloc.vpr.match",
+                   "geoloc.vpr.jobs", "geoloc.vpr.calibration", "geoloc.vpr.sites",
                    "geoloc.geo.facility", "geoloc.geo.textgeo"):
         try:
             __import__(module)
