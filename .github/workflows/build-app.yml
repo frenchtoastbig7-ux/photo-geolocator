@@ -66,6 +66,16 @@ jobs:
       - name: Build the disk image
         run: bash packaging/make_dmg.sh
 
+      - name: Checksum the disk image
+        # Written in the same job that builds the image and uploaded with it,
+        # so the published checksum always describes the published file. A
+        # checksum attached separately goes stale the moment any later build
+        # replaces the image, and PyInstaller builds are not reproducible.
+        run: |
+          cd dist
+          shasum -a 256 GeolocationWorkbench.dmg > GeolocationWorkbench.dmg.sha256
+          cat GeolocationWorkbench.dmg.sha256
+
       - name: Report size
         run: |
           du -sh "dist/Geolocation Workbench.app"
@@ -75,10 +85,14 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: GeolocationWorkbench-macos
-          path: dist/GeolocationWorkbench.dmg
+          path: |
+            dist/GeolocationWorkbench.dmg
+            dist/GeolocationWorkbench.dmg.sha256
 
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
         with:
-          files: dist/GeolocationWorkbench.dmg
+          files: |
+            dist/GeolocationWorkbench.dmg
+            dist/GeolocationWorkbench.dmg.sha256
