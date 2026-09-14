@@ -7,6 +7,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write       # Sigstore signing for build attestations
+  attestations: write
 
 jobs:
   build-macos:
@@ -88,6 +90,14 @@ jobs:
           path: |
             dist/GeolocationWorkbench.dmg
             dist/GeolocationWorkbench.dmg.sha256
+
+      # Signed provenance tying the .dmg to this repo, workflow and commit.
+      # Anyone can check a download with:
+      #   gh attestation verify GeolocationWorkbench.dmg -R frenchtoastbig7-ux/photo-geolocator
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: dist/GeolocationWorkbench.dmg
 
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/')
