@@ -1,0 +1,56 @@
+# --- Investigative material: NEVER commit ---
+# Case directories hold the source imagery under analysis, extracted text,
+# EXIF dumps and the resulting location hypotheses. Committing one publishes
+# both the subject image and your analysis of it.
+cases/*
+!cases/.gitkeep
+*.case.json
+posterior.npy
+report.html
+
+# Sample or working imagery dropped into the repo root
+/*.jpg
+/*.jpeg
+/*.png
+/*.tif
+/*.tiff
+/*.heic
+/*.webp
+
+# --- Model weights and derived caches (large, re-fetchable) ---
+*.safetensors
+*.onnx
+worldgrid_*.npz
+.cache/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# --- Packaging build output ---
+build/
+dist/
+*.dmg
+smoke.log
+# Working directory for iconutil; the .icns and preview PNG are committed so
+# the icon is reviewable, and build_app.sh regenerates both from make_icon.py.
+packaging/geoloc.iconset/
+
+# --- Editors / OS ---
+.DS_Store
+.idea/
+.vscode/
+*.swp

@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint-test:
+    name: ${{ matrix.os }} / py${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS is not redundant here: OCR and face detection run through
+        # Apple's Vision framework, so those code paths only execute there.
+        # Ubuntu confirms the tool still imports and fuses without them.
+        os: [ubuntu-latest, macos-latest]
+        python-version: ['3.11', '3.12']
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        # The `ml` extra pulls ~2 GB of PyTorch and is deliberately omitted:
+        # no test loads the scene model, and `clip_scene` imports torch lazily
+        # so the module-level compatibility test runs without it.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,ocr]"
+
+      - name: Ruff lint
+        run: ruff check .
+
+      - name: Pytest
+        run: pytest -q
+
+      - name: Verify CLI entry point
+        run: geoloc --help
